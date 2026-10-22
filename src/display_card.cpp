@@ -31,9 +31,31 @@ struct CardCell  { char lbl[10]; char lblShort[7]; int16_t val; uint8_t unit; ui
 struct CardChip  { uint16_t color; char type[12]; uint8_t known; uint8_t active; int8_t remain; };
 // AMS page: one tile per tray, boxes = an AMS unit (4 tiles), an AMS HT or the external spool (1 tile).
 struct CardAmsTile { uint16_t color; char type[10]; char slot[4]; uint8_t present, active; int8_t remain; };
-struct CardAmsBox  { char label[10]; char env[16]; uint8_t n, region; CardAmsTile t[4]; };
+struct CardAmsBox  {
+  char label[GAUGE_LABEL_LEN + 8];  // "<base> <suffix>"; sized for a full custom base
+  char suffix[4];          // "A".."D" or "HT" - kept apart so it survives name fitting
+  char model[8];           // generation badge next to it, "" = unreported/HT
+  char env[16];            // compact humidity + temperature text (narrow fallback)
+  uint8_t n, region;
+  int8_t humPct;           // -1 = no real RH reading (must not render as 0%)
+  uint8_t humLvl;
+  float temp;
+  uint16_t dryMin;
+  bool envHide;            // external spool: no humidity / temperature / drying at all
+  CardAmsTile t[4];
+};
 
 enum : uint8_t { CU_DEG = 0, CU_PCT = 1, CU_OF5 = 2 };
+
+// The vector-card AMS presentation (unit panels, status pills, drawn spools)
+// was designed for the 1024x600 P4 panel. Other boards keep the original
+// label / env / tile rendering even where the grid is roomy (gr.big), so this
+// gate - not gr.big - decides which path runs.
+#if defined(BOARD_IS_WS_P4_7B)
+static constexpr bool AMS_VECTOR_CARD = true;
+#else
+static constexpr bool AMS_VECTOR_CARD = false;
+#endif
 
 struct CardFrame {
   uint8_t  kind, slot, rotation, left, bottom;
@@ -436,6 +458,9 @@ static void snapBottom(CardFrame& f, const BambuState& s, const char* serial, ui
   }
 }
 
+static void formatAmsDeviceLabel(char* out, size_t len, uint8_t letterIdx, bool isHt,
+                                 char* suffixOut, size_t suffixLen);
+
 static void snapAmsColumn(CardFrame& f, const BambuState& s, uint8_t slot) {
   if (dispSettings.cardLeft == 1) return;
   const AmsState& a = s.ams;
@@ -448,8 +473,11 @@ static void snapAmsColumn(CardFrame& f, const BambuState& s, uint8_t slot) {
   f.amsShow = 1;
   if (own || ov) {
     const AmsUnit& au = a.units[u];
-    if (au.id >= 128) snprintf(f.amsLabel, sizeof(f.amsLabel), "AMS HT");
-    else formatAmsNumberLabel(f.amsLabel, sizeof(f.amsLabel), (uint8_t)u);
+    // Same device name the AMS page uses ("AMS A"); the generation badge has no
+    // room in this column and is left to the page itself.
+    formatAmsDeviceLabel(f.amsLabel, sizeof(f.amsLabel),
+                         (uint8_t)(au.id < 26 ? au.id : u), au.id >= 128,
+                         nullptr, 0);
     if (hasAmsHumidityPercent(au))   snprintf(f.amsHum, sizeof(f.amsHum), "%u%%", au.humidityRaw);
     else if (au.humidity > 0) snprintf(f.amsHum, sizeof(f.amsHum),
 #if defined(DISPLAY_1024x600)
@@ -1470,6 +1498,39 @@ static void unitEnv(char* out, size_t n, const AmsUnit& u) {
   else                       strlcpy(out, h, n);
 }
 
+// Device name for a unit: "<base> A".."<base> D" for standard units (base is
+// the user's gaugeLabels.amsBase override), "<base> HT" for an AMS HT. The
+// generation is a separate badge - never part of this string.
+//
+// The suffix is the part that identifies the unit, so when the buffer cannot
+// hold the whole custom base the base is trimmed (UTF-8 safe) and the suffix is
+// always kept. The suffix is also stored separately on the box for width
+// fitting at draw time.
+static void formatAmsDeviceLabel(char* out, size_t len, uint8_t letterIdx, bool isHt,
+                                 char* suffixOut, size_t suffixLen) {
+  const char* base = gaugeLabelOr(gaugeLabels.amsBase, "AMS");
+  char suffix[4];
+  if (isHt) strlcpy(suffix, "HT", sizeof(suffix));
+  else      snprintf(suffix, sizeof(suffix), "%c", (char)('A' + letterIdx));
+  if (suffixOut && suffixLen) strlcpy(suffixOut, suffix, suffixLen);
+
+  char full[GAUGE_LABEL_LEN + 8];
+  snprintf(full, sizeof(full), "%s %s", base, suffix);
+  if (strlen(full) < len) {
+    strlcpy(out, full, len);
+    return;
+  }
+  char body[GAUGE_LABEL_LEN + 1];
+  strlcpy(body, base, sizeof(body));
+  const size_t need = strlen(suffix) + 2;          // space + suffix + NUL
+  while (body[0] && strlen(body) + need > len) {
+    body[strlen(body) - 1] = '\0';
+    utf8TrimPartial(body);                          // never cut a UTF-8 sequence
+  }
+  if (body[0]) snprintf(out, len, "%s %s", body, suffix);
+  else         strlcpy(out, suffix, len);
+}
+
 // Every box in display order: AMS units, then AMS HT units, then the external spool.
 static uint8_t buildAmsBoxes(const AmsState& a, CardAmsBox* out, uint8_t cap) {
   uint8_t n = 0;
@@ -1479,11 +1540,26 @@ static uint8_t buildAmsBoxes(const AmsState& a, CardAmsBox* out, uint8_t cap) {
       if (!au.present || au.id >= 128) continue;
       CardAmsBox& b = out[n++];
       memset(&b, 0, sizeof(b));
-      formatAmsNumberLabel(b.label, sizeof(b.label), u);
+      // Title = device name only ("AMS A"), generation = separate badge. The
+      // letter follows the raw AMS id (the port letter Bambu Studio shows), and
+      // falls back to the array index only when the id is out of alphabet range.
+      const char letter = (char)('A' + (au.id < 26 ? au.id : u));
+      formatAmsDeviceLabel(b.label, sizeof(b.label),
+                           (uint8_t)(au.id < 26 ? au.id : u), false,
+                           b.suffix, sizeof(b.suffix));
+      const uint8_t model = amsModelForUnitId(a, au.id);
+      const char* badge = amsModelBadge(model);
+      if (badge) strlcpy(b.model, badge, sizeof(b.model));
       unitEnv(b.env, sizeof(b.env), au);
+      b.humPct = hasAmsHumidityPercent(au) ? (int8_t)au.humidityRaw : (int8_t)-1;
+      b.humLvl = au.humidity;
+      b.temp   = au.temp;
+      // Unknown model: trust the reported countdown. Known model: only the
+      // heater-equipped ones may show it.
+      b.dryMin = (model == AMS_MODEL_NONE || amsModelCanDry(model)) ? au.dryRemainMin : 0;
+      b.envHide = false;
       b.n = au.trayCount ? au.trayCount : AMS_TRAYS_PER_UNIT;
       if (b.n > AMS_TRAYS_PER_UNIT) b.n = AMS_TRAYS_PER_UNIT;
-      const char letter = (char)('A' + (au.id < 26 ? au.id : u));
       for (uint8_t t = 0; t < b.n; t++) {
         const uint8_t idx = u * AMS_TRAYS_PER_UNIT + t;
         const char slot[4] = { letter, (char)('1' + t), 0, 0 };
@@ -1495,8 +1571,14 @@ static uint8_t buildAmsBoxes(const AmsState& a, CardAmsBox* out, uint8_t cap) {
       if (!au.present || au.id < 128) continue;
       CardAmsBox& b = out[n++];
       memset(&b, 0, sizeof(b));
-      strlcpy(b.label, "HT", sizeof(b.label));
+      formatAmsDeviceLabel(b.label, sizeof(b.label), 0, true,
+                           b.suffix, sizeof(b.suffix));
       unitEnv(b.env, sizeof(b.env), au);
+      b.humPct = hasAmsHumidityPercent(au) ? (int8_t)au.humidityRaw : (int8_t)-1;
+      b.humLvl = au.humidity;
+      b.temp   = au.temp;
+      b.dryMin = au.dryRemainMin;
+      b.envHide = false;
       b.n = 1;
       if (u < AMS_TRAY_UNITS) {
         const uint8_t idx = u * AMS_TRAYS_PER_UNIT;
@@ -1514,6 +1596,13 @@ static uint8_t buildAmsBoxes(const AmsState& a, CardAmsBox* out, uint8_t cap) {
     CardAmsBox& b = out[n++];
     memset(&b, 0, sizeof(b));
     strlcpy(b.label, "EXT", sizeof(b.label));
+    // The spool holder reports no humidity, temperature or drying, and the
+    // zeroed struct must not read as a real 0% RH reading.
+    b.humPct  = -1;
+    b.humLvl  = 0;
+    b.temp    = 0;
+    b.dryMin  = 0;
+    b.envHide = true;
     b.n = 1;
     AmsTray vt = {};
     vt.present = true;
@@ -1546,8 +1635,10 @@ static AmsGrid amsGrid(const CardGeo& g) {
   auto S = [&](int16_t v) { return (int16_t)((v * g.k + 50) / 100); };
   AmsGrid a;
   a.cols = g.W > g.H ? 2 : 1;
-  a.gapX = S(14);
-  a.gapY = S(12);
+  // The vector-card style draws a panel per unit, so the gutters must exceed
+  // the panel inset or neighbouring cards merge into one block.
+  a.gapX = AMS_VECTOR_CARD ? S(16) : S(14);
+  a.gapY = AMS_VECTOR_CARD ? S(16) : S(12);
   const int16_t w = g.W - 2 * g.pad;
   a.rw = a.cols == 2 ? (w - a.gapX) / 2 : w;
   a.colW = (a.rw - 3 * S(5)) / 4;
@@ -1604,8 +1695,90 @@ static bool snapAmsPage(CardFrame& f, PrinterSlot& p, bool autoModes, bool stand
   return true;
 }
 
+// Scale an RGB565 colour's channels by num/den (clamped), so shading never
+// bleeds one channel into the next the way a raw add/subtract would.
+static uint16_t scaleRgb565(uint16_t c, uint16_t num, uint16_t den) {
+  uint16_t r = (uint16_t)(((c >> 11) & 0x1F) * num / den);
+  uint16_t g = (uint16_t)(((c >> 5) & 0x3F) * num / den);
+  uint16_t b = (uint16_t)((c & 0x1F) * num / den);
+  if (r > 0x1F) r = 0x1F;
+  if (g > 0x3F) g = 0x3F;
+  if (b > 0x1F) b = 0x1F;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// Near-black filament: shading alone would leave an invisible spool, so its
+// winding uses gray highlights instead of scaled colour.
+static bool isNearBlack(uint16_t c) {
+  return (((c >> 11) & 0x1F) * 2 + ((c >> 5) & 0x3F) + (c & 0x1F) * 2) < 12;
+}
+
 static void drawAmsTile(Cv& cv, const CardAmsTile& t, const CardFrame& f,
                         int16_t x, int16_t y, int16_t w, int16_t h, bool big) {
+  if (big && AMS_VECTOR_CARD) {
+    // Vector spool (ha-bambulab AMS card look): gray spool body with dark
+    // side flanges, the filament wound across the middle in the spool color
+    // with darker winding stripes, and the remaining % in a center badge.
+    constexpr uint16_t SPOOL_BODY = 0x8C71;   // mid gray
+    constexpr uint16_t SPOOL_DARK = 0x52AA;   // flange gray
+    const int16_t r = cv.S(5);
+    cv.rrect(x, y, w, h, r, SPOOL_BODY);
+    const int16_t fw = std::max<int16_t>(cv.S(6), w / 9);
+    cv.rect(x + cv.S(2), y + cv.S(2), fw, h - 2 * cv.S(2), SPOOL_DARK);
+    cv.rect(x + w - fw - cv.S(2), y + cv.S(2), fw, h - 2 * cv.S(2), SPOOL_DARK);
+    if (t.present) {
+      // Full-width winding with a cylinder shading: light top edge, pure
+      // color mid, dark bottom edge - reads as a round spool hub. The actual
+      // filament colour is always drawn; near-black gets gray highlights and
+      // a visible outline instead of fading into the panel.
+      const int16_t bandH = (int16_t)(h * 0.74f);
+      const int16_t bandY = y + (h - bandH) / 2;
+      const int16_t bx0 = x + fw + cv.S(2), bw2 = w - 2 * (fw + cv.S(2));
+      const bool black = isNearBlack(t.color);
+      const uint16_t light = black ? 0x8C71 : scaleRgb565(t.color, 3, 2);
+      const uint16_t shade = black ? 0x4208 : scaleRgb565(t.color, 1, 2);
+      const int16_t edge = std::max<int16_t>(bandH / 6, 2);
+      cv.rect(bx0, bandY, bw2, bandH, t.color);
+      cv.rect(bx0, bandY, bw2, edge, light);
+      cv.rect(bx0, bandY + bandH - edge, bw2, edge, shade);
+      for (int16_t sx = bx0 + cv.S(2); sx < bx0 + bw2 - 1; sx += cv.S(4)) {
+        cv.vline(sx, bandY, bandH, shade);
+        cv.vline(sx + 1, bandY, bandH, light);
+      }
+      if (black) {                           // keep the black body readable
+        cv.vline(bx0, bandY, bandH, light);
+        cv.vline(bx0 + bw2 - 1, bandY, bandH, light);
+      }
+    }
+    if (t.active) cv.rrectOutline(x - 2, y - 2, w + 4, h + 4, r + 2, f.accent);
+    if (!t.present) {
+      cv.rrectOutline(x, y, w, h, r, f.dim);
+      if (t.type[0] == '?')
+        cv.text("--", x + w / 2, y + h / 2, FONT_CARD_LBL, f.dim, lgfx::textdatum_t::middle_center);
+      return;
+    }
+    if (t.remain >= 0) {
+      char pct[8];
+      snprintf(pct, sizeof(pct), "%d%%", t.remain);
+      cv.useFont(FONT_CARD_LBL);
+      int16_t bw2 = (int16_t)(cv.width(pct) + cv.S(14));
+      if (bw2 > w - cv.S(6)) bw2 = (int16_t)(w - cv.S(6));
+      const int16_t bh2 = cv.S(18);
+      cv.rrect(x + (w - bw2) / 2, y + (h - bh2) / 2, bw2, bh2, bh2 / 2, f.bg);
+      cv.text(pct, x + w / 2, y + h / 2, FONT_CARD_LBL, f.txt, lgfx::textdatum_t::middle_center);
+    }
+    // Filament type chip on the spool foot (graphic-ams-card style).
+    if (t.type[0] && t.type[0] != '?') {
+      cv.useFont(FONT_CARD_LBL);
+      const int16_t tw = cv.width(t.type) + 2 * cv.S(4);
+      const int16_t ch = cv.S(13);
+      const int16_t cx = x + (w - tw) / 2, cy = y + h - ch - cv.S(4);
+      cv.rrect(cx, cy, tw, ch, ch / 2, f.bg);
+      cv.text(t.type, x + w / 2, cy + ch / 2, FONT_CARD_LBL, f.txt,
+              lgfx::textdatum_t::middle_center);
+    }
+    return;
+  }
   const int16_t bh = cv.S(4), r = cv.S(4);
   if (t.present && t.remain >= 0) {
     cv.rrect(x, y, w, bh, bh / 2, f.track);
@@ -1648,16 +1821,219 @@ static void drawAmsTile(Cv& cv, const CardAmsTile& t, const CardFrame& f,
   cv.text(pct, x + w / 2, ty + th - cv.S(4), pf, ink, lgfx::textdatum_t::bottom_center);
 }
 
+// ── AMS unit card (P4) ──────────────────────────────────────────────────────
+// One unit is a single component: a panel, one header line and the spool row.
+// Every chip shares one height, radius, fill and padding; only the ink colour
+// carries meaning (accent = drying, severity colour = humidity, dim = model).
+// The header keeps to a single line, so the chips are sized tight and the
+// readings are measured before anything is drawn.
+static void drawAmsCard(Cv& cv, const CardAmsBox& b, const CardFrame& f,
+                        const AmsGrid& gr, int16_t x, int16_t y, int16_t w,
+                        bool solo) {
+  const int16_t pad     = cv.S(5);      // panel inset around the content box
+  const int16_t radius  = cv.S(10);
+  const int16_t hh      = cv.S(18);
+  const int16_t chipH   = cv.S(13);
+  const int16_t chipPad = cv.S(2);
+  const int16_t chipGap = cv.S(2);
+  const int16_t slotH   = cv.S(12);
+  const int16_t gap     = cv.S(5);
+  const int16_t cy      = y + hh / 2;
+
+  cv.rrect(x - pad, y - pad, w + 2 * pad, gr.rh + 2 * pad, radius, f.track);
+
+  // Device name (custom gaugeLabels.amsBase honoured upstream), then the model
+  // chip beside it - both on the header's single line. A long custom base is
+  // fitted to the card: the body is shortened and the unit suffix (" A".." HT")
+  // is kept, so a wide name can never run under the next card.
+  cv.useFont(FONT_SMALL);
+  char name[GAUGE_LABEL_LEN + 8];
+  strlcpy(name, b.label, sizeof(name));
+  int16_t nameW = cv.width(name);
+  const int16_t nameCap = (int16_t)((int32_t)w * 45 / 100);
+  if (nameW > nameCap) {
+    char body[GAUGE_LABEL_LEN + 8];
+    strlcpy(body, b.label, sizeof(body));
+    char suffixPart[8] = "";
+    const size_t sl = strlen(b.suffix);
+    if (sl) {
+      if (strlen(body) > sl + 1) body[strlen(body) - sl - 1] = '\0';
+      snprintf(suffixPart, sizeof(suffixPart), " %s", b.suffix);
+    }
+    const int16_t sufW = cv.width(suffixPart);
+    fitText(cv, body, sizeof(body), body, nameCap - sufW);
+    snprintf(name, sizeof(name), "%s%s", body, suffixPart);
+    nameW = cv.width(name);
+  }
+  cv.text(name, x, cy, FONT_SMALL, f.txt, lgfx::textdatum_t::middle_left);
+  int16_t leftEnd = x + nameW;
+  if (b.model[0]) {
+    cv.useFont(FONT_CARD_LBL);
+    const int16_t mw = cv.width(b.model) + 2 * chipPad;
+    const int16_t mx = leftEnd + chipGap;
+    cv.rrect(mx, cy - chipH / 2, mw, chipH, chipH / 2, f.bg);
+    cv.text(b.model, mx + mw / 2, cy, FONT_CARD_LBL, f.dim,
+            lgfx::textdatum_t::middle_center);
+    leftEnd = mx + mw;
+  }
+
+  // Readings: drying and the environment pair, both as the same chip.
+  char dryTxt[16] = "";
+  char envTxt[24] = "";
+  char envHum[10] = "";
+  uint16_t envInk = f.txt;
+  if (!b.envHide) {
+    if (b.dryMin > 0) {
+      if (b.dryMin >= 60) snprintf(dryTxt, sizeof(dryTxt), "DRY %uh%02u", b.dryMin / 60, b.dryMin % 60);
+      else                snprintf(dryTxt, sizeof(dryTxt), "DRY %um", b.dryMin);
+    }
+    char hum[10] = "";
+    if (b.humPct >= 0) {
+      snprintf(hum, sizeof(hum), "%u%%", (uint8_t)b.humPct);
+      envInk = b.humPct <= 10 ? CLR_GREEN
+             : b.humPct <= 20 ? CLR_YELLOW
+             : b.humPct <= 30 ? CLR_ORANGE : CLR_RED;
+    } else if (b.humLvl > 0 && b.humLvl <= 5) {
+      snprintf(hum, sizeof(hum), "L%u", b.humLvl);
+    }
+    char temp[8] = "";
+    if (b.temp > 0.5f) snprintf(temp, sizeof(temp), "%d°", (int)lroundf(b.temp));
+    strlcpy(envHum, hum, sizeof(envHum));
+    if (hum[0] && temp[0])   snprintf(envTxt, sizeof(envTxt), "%s · %s", hum, temp);
+    else if (hum[0])         strlcpy(envTxt, hum, sizeof(envTxt));
+    else if (temp[0])        strlcpy(envTxt, temp, sizeof(envTxt));
+  }
+
+  // Two single-tray units sharing a region get a narrow card each. Step down
+  // until the readings fit: full pair -> humidity only -> the drying countdown
+  // without its "DRY " label. Humidity is never sacrificed for temperature.
+  {
+    cv.useFont(FONT_CARD_LBL);
+    const int16_t room0 = (int16_t)(x + w - leftEnd - cv.S(4));
+    auto chipW = [&](const char* t) {
+      return t[0] ? (int16_t)(cv.width(t) + 2 * chipPad) : (int16_t)0;
+    };
+    auto comboW = [&](const char* a, const char* b) {
+      const int16_t wa = chipW(a), wb = chipW(b);
+      return (int16_t)(wa + wb + ((wa && wb) ? chipGap : 0));
+    };
+    char dryShort[10] = "";
+    if (dryTxt[0]) strlcpy(dryShort, dryTxt + 4, sizeof(dryShort));   // skip "DRY "
+    if (comboW(dryTxt, envTxt) > room0) {
+      if (envHum[0] && comboW(dryTxt, envHum) <= room0) {
+        strlcpy(envTxt, envHum, sizeof(envTxt));
+      } else if (envHum[0] && dryShort[0] && comboW(dryShort, envHum) <= room0) {
+        strlcpy(dryTxt, dryShort, sizeof(dryTxt));
+        strlcpy(envTxt, envHum, sizeof(envTxt));
+      }
+    }
+  }
+
+  struct Chip { const char* txt; uint16_t ink; int16_t w; };
+  Chip chip[2];
+  uint8_t nc = 0;
+  cv.useFont(FONT_CARD_LBL);
+  if (dryTxt[0]) {
+    chip[nc].txt = dryTxt; chip[nc].ink = f.accent; nc++;
+  }
+  if (envTxt[0]) {
+    chip[nc].txt = envTxt; chip[nc].ink = envInk;   nc++;
+  }
+  for (uint8_t k = 0; k < nc; k++)
+    chip[k].w = (int16_t)(cv.width(chip[k].txt) + 2 * chipPad);
+
+  const int16_t rightEdge = x + w;      // content box edge; the panel adds `pad`
+  const int16_t avail     = rightEdge - leftEnd - cv.S(4);
+  int16_t total = -chipGap;
+  for (uint8_t k = 0; k < nc; k++) total += chip[k].w + chipGap;
+  bool chipOn[2] = { false, false };
+  if (total <= avail) {
+    for (uint8_t k = 0; k < nc; k++) chipOn[k] = true;
+  } else {
+    int16_t used = 0;
+    for (uint8_t k = 0; k < nc; k++) {
+      const int16_t need = chip[k].w + (used ? chipGap : 0);
+      if (used + need > avail) continue;
+      chipOn[k] = true;
+      used += need;
+    }
+  }
+
+  int16_t rx = rightEdge;
+  for (int8_t k = (int8_t)nc - 1; k >= 0; k--) {
+    if (!chipOn[k]) continue;
+    if (rx - chip[k].w < leftEnd + cv.S(4)) {   // a chip that does not fit leaves rx alone
+      chipOn[k] = false;
+      continue;
+    }
+    rx -= chip[k].w;
+    cv.rrect(rx, cy - chipH / 2, chip[k].w, chipH, chipH / 2, f.bg);
+    cv.text(chip[k].txt, rx + chip[k].w - chipPad, cy, FONT_CARD_LBL, chip[k].ink,
+            lgfx::textdatum_t::middle_right);
+    rx -= chipGap;
+  }
+
+  // Whatever did not fit becomes one plain text run in the gap left of the
+  // chips that were kept - same ink family, no second box style invented.
+  const char* spare[2];
+  uint8_t ns = 0;
+  for (uint8_t k = 0; k < nc; k++)
+    if (!chipOn[k]) spare[ns++] = chip[k].txt;
+  if (ns) {
+    const int16_t room = rx - leftEnd - cv.S(4);
+    char txt[32] = "";
+    auto join = [&](uint8_t count) {
+      txt[0] = '\0';
+      for (uint8_t i = 0; i < count; i++) {
+        if (i) strlcat(txt, " ", sizeof(txt));
+        strlcat(txt, spare[i], sizeof(txt));
+      }
+    };
+    cv.useFont(FONT_CARD_LBL);
+    join(ns);
+    while (ns > 0 && (room <= 0 || cv.width(txt) > room)) join(--ns);
+    if (ns > 0)
+      cv.text(txt, leftEnd + cv.S(4), cy, FONT_CARD_LBL, f.dim,
+              lgfx::textdatum_t::middle_left);
+  }
+
+  // Spool row and slot letters (the tile draws its own %-badge and type chip).
+  const int16_t tileH = gr.rh - hh - slotH;
+  for (uint8_t t = 0; t < b.n; t++) {
+    const int16_t tx = solo ? x + (w - gr.colW) / 2 : x + t * (gr.colW + gap);
+    drawAmsTile(cv, b.t[t], f, tx, y + hh, gr.colW, tileH, true);
+    cv.text(b.t[t].slot, tx + gr.colW / 2, y + gr.rh - slotH + cv.S(2), FONT_CARD_LBL,
+            f.dim, lgfx::textdatum_t::top_center);
+  }
+}
+
 static void drawAmsRegion(Cv& cv, const CardFrame& f, const AmsGrid& gr, uint8_t region,
                           int16_t x, int16_t y) {
-  const int16_t gap = cv.S(5), colW = gr.colW;
+  const int16_t gap = cv.S(5);
   const int16_t hh = gr.big ? cv.S(20) : cv.S(14), slotH = cv.S(12);
   const FontID lf = gr.big ? FONT_BODY : FONT_CARD_LBL;
+  uint8_t regionBoxes = 0;
   int16_t bx = x;
+
+  if (gr.big && AMS_VECTOR_CARD) {
+    for (uint8_t i = 0; i < f.boxCount; i++)
+      if (f.boxes[i].region == region) regionBoxes++;
+    for (uint8_t i = 0; i < f.boxCount; i++) {
+      const CardAmsBox& b = f.boxes[i];
+      if (b.region != region) continue;
+      const bool solo = (b.n == 1 && regionBoxes == 1);
+      const int16_t bw = (b.n > 1 || solo) ? gr.rw : 2 * gr.colW + gap;
+      drawAmsCard(cv, b, f, gr, bx, y, bw, solo);
+      bx += bw + gap;
+    }
+    return;
+  }
+
+  // Original path (every non-P4 board): title always, env right-aligned.
   for (uint8_t i = 0; i < f.boxCount; i++) {
     const CardAmsBox& b = f.boxes[i];
     if (b.region != region) continue;
-    const int16_t bw = b.n > 1 ? gr.rw : 2 * colW + gap;
+    const int16_t bw = b.n > 1 ? gr.rw : 2 * gr.colW + gap;
     cv.text(b.label, bx, y, lf, f.txt, lgfx::textdatum_t::top_left);
     if (b.env[0]) {
       char env[16];
@@ -1668,9 +2044,9 @@ static void drawAmsRegion(Cv& cv, const CardFrame& f, const AmsGrid& gr, uint8_t
       if (cv.width(env) <= room) cv.text(env, bx + bw, y, lf, f.dim, lgfx::textdatum_t::top_right);
     }
     for (uint8_t t = 0; t < b.n; t++) {
-      const int16_t tx = bx + t * (colW + gap);
-      drawAmsTile(cv, b.t[t], f, tx, y + hh, colW, gr.rh - hh - slotH, gr.big);
-      cv.text(b.t[t].slot, tx + colW / 2, y + gr.rh - slotH + cv.S(2), FONT_CARD_LBL, f.dim,
+      const int16_t tx = bx + t * (gr.colW + gap);
+      drawAmsTile(cv, b.t[t], f, tx, y + hh, gr.colW, gr.rh - hh - slotH, gr.big);
+      cv.text(b.t[t].slot, tx + gr.colW / 2, y + gr.rh - slotH + cv.S(2), FONT_CARD_LBL, f.dim,
               lgfx::textdatum_t::top_center);
     }
     bx += bw + gap;
@@ -1684,8 +2060,10 @@ static void sceneAms(Cv& cv, const CardFrame& f, const CardGeo& g) {
     const int16_t col = r % gr.cols, row = r / gr.cols;
     const int16_t x = g.pad + col * (gr.rw + gr.gapX), y = gr.top + row * (gr.rh + gr.gapY);
     drawAmsRegion(cv, f, gr, r, x, y);
-    if (col > 0) cv.vline(x - gr.gapX / 2, y, gr.rh, f.track);
-    if (row > 0 && col == 0) cv.hline(g.pad, y - gr.gapY / 2, g.W - 2 * g.pad, f.track);
+    if (!AMS_VECTOR_CARD) {                       // cards stand alone: no table rules
+      if (col > 0) cv.vline(x - gr.gapX / 2, y, gr.rh, f.track);
+      if (row > 0 && col == 0) cv.hline(g.pad, y - gr.gapY / 2, g.W - 2 * g.pad, f.track);
+    }
   }
   if (f.amsPages > 1) {
     const int16_t dp = cv.S(10), span = (f.amsPages - 1) * dp;

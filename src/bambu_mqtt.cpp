@@ -751,6 +751,61 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
     }
   }
 
+  // AMS module self-report (info.module[]): "name" is "ams/0" | "ams_f1/0" |
+  // "n3f/0" | "n3s/0" - the only definitive per-unit model id. Kept keyed by
+  // module index; the display layer matches units to models in order.
+  {
+    const char* modPos = (const char*)memmem(payload, length, "\"module\":", 9);
+    if (modPos) {
+      const char* arr = modPos + 9;
+      while (arr < payloadEnd && (*arr == ' ' || *arr == '\n' || *arr == '\r' || *arr == '\t')) arr++;
+      if (arr < payloadEnd && *arr == '[') {
+        const char* end = arr;
+        int depth = 0;
+        while (end < payloadEnd) {
+          if (*end == '[') depth++;
+          else if (*end == ']') { depth--; if (depth == 0) { end++; break; } }
+          end++;
+        }
+        if (depth == 0) {
+          JsonDocument md;
+          if (!deserializeJson(md, arr, (size_t)(end - arr))) {
+            for (JsonObject m : md.as<JsonArray>()) {
+              const char* name = m["name"];
+              if (!name) continue;
+              const char* slash = strchr(name, '/');
+              if (!slash || slash == name) continue;
+              const size_t pl = (size_t)(slash - name);
+              uint8_t model = 0;
+              if      (pl == 3 && strncmp(name, "ams",   3) == 0) model = AMS_MODEL_GEN1;
+              else if (pl == 6 && strncmp(name, "ams_f1", 6) == 0) model = AMS_MODEL_LITE;
+              else if (pl == 3 && strncmp(name, "n3f",   3) == 0) model = AMS_MODEL_GEN2;
+              else if (pl == 3 && strncmp(name, "n3s",   3) == 0) model = AMS_MODEL_HT;
+              else continue;
+              const uint8_t idx = (uint8_t)atoi(slash + 1);
+              // Store keyed by the raw AMS id from the name suffix - the same id
+              // the ams.ams[] entries carry, so display lookups never depend on
+              // array order. 128 (AMS HT) is a normal id here.
+              int8_t slotIdx = -1;
+              for (uint8_t i = 0; i < s.ams.moduleCount && i < 8; i++)
+                if (s.ams.module[i].id == idx) { slotIdx = (int8_t)i; break; }
+              if (slotIdx < 0) {
+                if (s.ams.moduleCount >= 8) continue;
+                slotIdx = (int8_t)s.ams.moduleCount++;
+                s.ams.module[slotIdx].id = idx;
+                s.ams.module[slotIdx].model = 0;
+              }
+              if (s.ams.module[slotIdx].model == model) continue;
+              s.ams.module[slotIdx].model = model;
+              Serial.printf("MQTT: AMS module %s -> %s\n", name,
+                            amsModelName(model) ? amsModelName(model) : "?");
+            }
+          }
+        }
+      }
+    }
+  }
+
   // AMS data: parse from raw payload (deeply nested, same approach as extruder)
   // Search for "ams":{ (outer object, not "ams":[ which is the inner array)
   {
@@ -1745,6 +1800,14 @@ static void reconnectConn(MqttConn& c) {
     }
     c.diag.lastRc = 0;
     c.diag.connectDurMs = millis() - t0;
+    // Ask for the version/module list: the reply's info.module[] carries each
+    // AMS unit's hardware self-report ("ams/0" = gen 1, "n3f/0" = AMS 2 Pro,
+    // "n3s/0" = AMS HT), which humidity fields alone cannot distinguish.
+    // Requests go to the /request topic; the printer answers on /report.
+    char reqTopic[64];
+    snprintf(reqTopic, sizeof(reqTopic), "device/%s/request", cfg.serial);
+    if (!c.mqtt->publish(reqTopic, "{\"info\":{\"sequence_id\":\"0\",\"command\":\"get_version\"}}"))
+      MQTT_LOG("[%d] get_version publish FAILED (%s)", c.slotIndex, reqTopic);
     MQTT_LOG("[%d] CONNECTED in %lums, subscribed to %s", c.slotIndex, c.diag.connectDurMs, topic);
   } else {
     printers[c.slotIndex].state.connected = false;

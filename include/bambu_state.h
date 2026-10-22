@@ -69,6 +69,26 @@ inline void formatAmsHumidity(char* out, size_t size, const AmsUnit& unit, const
   else snprintf(out, size, "%s--", prefix);
 }
 
+// AMS model, resolved from the info.module name prefix (ha-bambulab mapping):
+// ams/N = gen 1, ams_f1/N = Lite, n3f/N = gen 2 (2 / 2 Pro), n3s/N = HT.
+// Humidity fields cannot tell generations apart - a gen-1 unit with fresh
+// desiccant also reports humidity_raw near 0.
+enum AmsModel : uint8_t {
+  AMS_MODEL_NONE = 0,
+  AMS_MODEL_GEN1 = 1,
+  AMS_MODEL_GEN2 = 2,
+  AMS_MODEL_LITE = 3,
+  AMS_MODEL_HT   = 4,
+};
+
+// One info.module[] entry. The name suffix is the raw AMS id from the same
+// snapshot ("ams/0", "n3f/2", "n3s/128"), so it is looked up by that id - never
+// by array position, which changes when the unit list is reordered.
+struct AmsModuleReport {
+  uint8_t id;                     // raw AMS id (0-15 standard, 128+ AMS HT)
+  uint8_t model;                  // AmsModel
+};
+
 struct AmsState {
   bool     present;               // any AMS data received
   uint8_t  unitCount;             // detected AMS units (0..AMS_MAX_UNITS)
@@ -83,7 +103,50 @@ struct AmsState {
   bool     vtPresent;             // external spool configured
   uint16_t vtColorRgb565;
   char     vtType[16];
+  AmsModuleReport module[8];      // info.module self-reports, keyed by raw AMS id
+  uint8_t  moduleCount;
 };
+
+inline const char* amsModelName(uint8_t m) {
+  switch (m) {
+    case AMS_MODEL_GEN1: return "AMS";
+    case AMS_MODEL_GEN2: return "AMS 2";
+    case AMS_MODEL_LITE: return "AMS Lite";
+    case AMS_MODEL_HT:   return "AMS HT";
+    default:             return nullptr;
+  }
+}
+
+// Short generation badge shown next to the unit name. Empty for HT (the name
+// already says it) and for an unreported model - an unknown unit must not be
+// labelled as any generation.
+inline const char* amsModelBadge(uint8_t m) {
+  switch (m) {
+    case AMS_MODEL_GEN1: return "Gen 1";
+    case AMS_MODEL_GEN2: return "2 Pro";
+    case AMS_MODEL_LITE: return "Lite";
+    default:             return nullptr;
+  }
+}
+
+// Drying is a hardware feature, not a reported state: only AMS 2 Pro and AMS HT
+// have a heater (ha-bambulab's AMS_DRYING_MODELS). A gen-1 unit or an AMS Lite
+// must never show a drying countdown, whatever a stale field claims.
+inline bool amsModelCanDry(uint8_t m) {
+  return m == AMS_MODEL_GEN2 || m == AMS_MODEL_HT;
+}
+
+// Model of the unit carrying raw AMS id `id`. AMS HT is structural (id high
+// bit) and needs no module report; a standard unit without one stays NONE.
+inline uint8_t amsModelForUnitId(const AmsState& a, uint8_t id) {
+  if (id >= 128) return AMS_MODEL_HT;
+  for (uint8_t i = 0; i < a.moduleCount && i < 8; i++) {
+    if (a.module[i].id != id) continue;
+    // A module-index collision with an HT report must not relabel a standard unit.
+    return a.module[i].model == AMS_MODEL_HT ? AMS_MODEL_NONE : a.module[i].model;
+  }
+  return AMS_MODEL_NONE;
+}
 
 // ── Printer errors: print.hms + print.print_error ───────────────────────────
 #if HAS_HMS_UI
