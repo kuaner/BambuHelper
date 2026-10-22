@@ -13,7 +13,9 @@ static bool improvSucceeded = false;
 static uint32_t improvDeadline = 0;
 
 static ImprovTypes::ChipFamily detectChipFamily() {
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  return ImprovTypes::ChipFamily::CF_ESP32_P4;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
   return ImprovTypes::ChipFamily::CF_ESP32_S3;
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
   return ImprovTypes::ChipFamily::CF_ESP32_C3;

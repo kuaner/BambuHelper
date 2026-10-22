@@ -1400,11 +1400,11 @@ void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius
   }
 }
 
-uint16_t amsHumidityColor(uint8_t humidityRaw, uint8_t humidityLevel, bool present) {
+uint16_t amsHumidityColor(uint8_t humidityRaw, uint8_t humidityLevel, bool present, bool rawKnown) {
   if (!present) return CLR_TEXT_DIM;
 
   // Raw RH is consistent across mixed AMS generations; humidity level is not.
-  if (humidityRaw >= 1 && humidityRaw <= 100) {
+  if ((rawKnown || humidityRaw >= 1) && humidityRaw <= 100) {
     if (humidityRaw <= 35) return CLR_GREEN;
     if (humidityRaw <= 50) return CLR_YELLOW;
     if (humidityRaw <= 65) return CLR_ORANGE;
@@ -1423,7 +1423,7 @@ uint16_t amsHumidityColor(uint8_t humidityRaw, uint8_t humidityLevel, bool prese
 // ---------------------------------------------------------------------------
 void drawHumidityGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
                        uint8_t humidityRaw, uint8_t humidityLevel, bool present,
-                       const char* label, bool forceRedraw) {
+                       const char* label, bool forceRedraw, bool rawKnown) {
   ScopedWrite sw(gfx);
   const uint16_t startAngle = 60;
   const int16_t thickness = LY_TEMP_GAUGE_T;
@@ -1435,7 +1435,8 @@ void drawHumidityGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t rad
   uint16_t fillEnd = startAngle + (uint16_t)(pct * 240 / 100);
   if (fillEnd > 300) fillEnd = 300;
 
-  uint16_t arcColor = amsHumidityColor(humidityRaw, humidityLevel, present);
+  const bool hasPercent = rawKnown || humidityRaw > 0;
+  uint16_t arcColor = amsHumidityColor(humidityRaw, humidityLevel, present, hasPercent);
 
   uint16_t drawFill = (pct > 0) ? fillEnd : startAngle;
   drawArcFill(gfx, cx, cy, radius, thickness, drawFill, arcColor, forceRedraw);
@@ -1443,9 +1444,12 @@ void drawHumidityGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t rad
   // Build display strings. Cache the fully rendered form, but draw the "%"
   // separately so it can use a smaller suffix font.
   char buf[8], valueBuf[8];
-  if (present) {
+  if (present && hasPercent) {
     snprintf(buf, sizeof(buf), "%d%%", humidityRaw);
     snprintf(valueBuf, sizeof(valueBuf), "%d", humidityRaw);
+  } else if (present && humidityLevel > 0) {
+    snprintf(buf, sizeof(buf), "L%u", humidityLevel);
+    valueBuf[0] = '\0';
   } else {
     strlcpy(buf, "--", sizeof(buf));
     valueBuf[0] = '\0';
@@ -1454,7 +1458,7 @@ void drawHumidityGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t rad
   if (gaugeTextChanged(cx, cy, buf, "", forceRedraw)) {
     clearGaugeCenter(gfx, cx, cy, radius, thickness);
 
-    if (present) {
+    if (present && hasPercent) {
       const int16_t suffixGap = 1;
       FontID valueFont = fitHumidityValueFont(
           gfx, valueBuf, radius, thickness, LY_GAUGE_VALUE_FONT, suffixGap);
@@ -1654,7 +1658,7 @@ void drawAmsFilamentAllGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16
   uint16_t hColor = unitPresent
       ? amsHumidityColor(ams.units[unitIndex].humidityRaw,
                          ams.units[unitIndex].humidity,
-                         true)
+                         true, ams.units[unitIndex].humidityRawKnown)
       : CLR_TEXT_DIM;
 
   // Quadrant geometry: TL=Slot1, TR=Slot2, BR=Slot3, BL=Slot4

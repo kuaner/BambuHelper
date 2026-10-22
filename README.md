@@ -8,6 +8,13 @@ Additional supported boards include Guition JC3248W535 320x480, CYD 240x320, Wav
 
 > **One-click setup:** as of v3.2, you can flash your board and configure WiFi entirely from the browser at **[keralots.github.io/BambuHelper](https://keralots.github.io/BambuHelper/)** - no PlatformIO, no esptool, no captive portal hopping.
 
+**Waveshare ESP32-P4-WIFI6-Touch-LCD-7B:** a source-build port adds the 1024×600
+EK79007 MIPI-DSI display, GT911 gestures, ESP32-C6 Wi-Fi and ES8311 speaker,
+with Gauges/Cards, AMS pages, split view and the existing LAN camera support.
+Build with `pio run -e ws_p4_lcd_7b` (Rev3.1+) or `-e ws_p4_lcd_7b_rev1`
+(Rev1.3). Display, touch and CN cloud printing are verified on Rev1.3 hardware.
+This source-build port is not in the web flasher. See [P4 build, flashing and hardware notes](docs/ESP32-P4-7B.md).
+
 ### Supported Printers
 
 | Connection Mode | Printers | How it connects |

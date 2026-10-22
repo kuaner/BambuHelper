@@ -71,7 +71,8 @@ enum ChipFamily : uint8_t {
   CF_ESP32_C3,
   CF_ESP32_S2,
   CF_ESP32_S3,
-  CF_ESP8266
+  CF_ESP8266,
+  CF_ESP32_P4
 };
 
 struct ImprovWiFiParamsStruct {

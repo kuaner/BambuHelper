@@ -18,7 +18,16 @@
 
 #include <LovyanGFX.hpp>
 
-#if defined(BOARD_IS_DIY)
+#if defined(BOARD_IS_WS_P4_7B)
+#include "lgfx_panel_ek79007.hpp"
+class LGFX_P4_7B : public lgfx::LGFX_Device {
+  lgfx::Panel_EK79007_7B _panel;
+public:
+  LGFX_P4_7B() { setPanel(&_panel); }
+};
+static LGFX_P4_7B _tft_instance;
+
+#elif defined(BOARD_IS_DIY)
 // --- Generic DIY SPI display (issue #153/#151) -------------------------------
 // Pins/driver/geometry come from -D flags, resolved + validated in
 // diy_display_config.h (pulled in via config.h, re-included here for clarity;

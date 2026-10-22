@@ -2,6 +2,7 @@
 #include "settings.h"
 #include "config.h"
 #include <Arduino.h>
+#include "led_pwm_compat.h"
 #if HAS_LED_PIXEL
 #include <esp32-hal-rmt.h>
 #endif
@@ -24,7 +25,11 @@ static uint8_t attachedDrv  = LED_DRV_SINGLE;
 // they were wired, not the way the form now says.
 static bool    attachedAnode = false;
 #if HAS_LED_PIXEL
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+static int8_t pixelPin = -1;
+#else
 static rmt_obj_t* pixelRmt  = NULL;
+#endif
 #endif
 
 // Two trackers with distinct jobs. lastAppliedDuty is the intensity envelope the
@@ -129,6 +134,9 @@ static uint32_t activeColor() {
 // ---------------------------------------------------------------------------
 bool isLedPinAllowed(uint8_t pin) {
   if (pin == 0) return false;
+#if defined(BOARD_IS_WS_P4_7B)
+  if (isP4SevenBReservedPin(pin)) return false;
+#endif
 
   // Generic dynamic conflicts (all boards)
   if (pin == BACKLIGHT_PIN) return false;
@@ -453,7 +461,11 @@ static void pixelWrite(uint8_t r, uint8_t g, uint8_t b) {
   (void)r; (void)g; (void)b;
   return;
 #else
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  if (pixelPin < 0) return;
+#else
   if (!pixelRmt) return;
+#endif
   rmt_data_t bits[24];
   const uint8_t ch[3] = { g, r, b };
   uint8_t i = 0;
@@ -467,7 +479,11 @@ static void pixelWrite(uint8_t r, uint8_t g, uint8_t b) {
       i++;
     }
   }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  rmtWrite(pixelPin, bits, 24, RMT_WAIT_FOR_EVER);
+#else
   rmtWriteBlocking(pixelRmt, bits, 24);
+#endif
 #endif
 }
 
@@ -484,7 +500,7 @@ static void writeOut(uint8_t duty, uint32_t rgb) {
 
   if (attachedDrv == LED_DRV_SINGLE) {
     if ((int32_t)duty == lastPushedOut) return;
-    ledcWrite(LED_PWM_CH, duty);
+    ledPwmWrite(LED_PWM_CH, duty);
     lastPushedOut = duty;
     return;
   }
@@ -500,9 +516,9 @@ static void writeOut(uint8_t duty, uint32_t rgb) {
     // Common anode: the shared leg is on 3V3, so the GPIO sinks the current and
     // the duty has to be inverted or the LED reads as a photographic negative.
     const bool inv = activeAnode();
-    ledcWrite(LED_PWM_CH,   inv ? (uint8_t)(255 - r) : r);
-    ledcWrite(LED_PWM_CH_G, inv ? (uint8_t)(255 - g) : g);
-    ledcWrite(LED_PWM_CH_B, inv ? (uint8_t)(255 - b) : b);
+    ledPwmWrite(LED_PWM_CH,   inv ? (uint8_t)(255 - r) : r);
+    ledPwmWrite(LED_PWM_CH_G, inv ? (uint8_t)(255 - g) : g);
+    ledPwmWrite(LED_PWM_CH_B, inv ? (uint8_t)(255 - b) : b);
   } else {
     pixelWrite(r, g, b);
   }
@@ -548,12 +564,12 @@ static void detachAndForceLow() {
   switch (attachedDrv) {
     case LED_DRV_RGB: {
       const bool inv = attachedAnode;
-      ledcWrite(LED_PWM_CH,   inv ? 255 : 0);
-      ledcWrite(LED_PWM_CH_G, inv ? 255 : 0);
-      ledcWrite(LED_PWM_CH_B, inv ? 255 : 0);
-      ledcDetachPin(attachedPin);
-      ledcDetachPin(attachedPinG);
-      ledcDetachPin(attachedPinB);
+      ledPwmWrite(LED_PWM_CH,   inv ? 255 : 0);
+      ledPwmWrite(LED_PWM_CH_G, inv ? 255 : 0);
+      ledPwmWrite(LED_PWM_CH_B, inv ? 255 : 0);
+      ledPwmDetach(attachedPin);
+      ledPwmDetach(attachedPinG);
+      ledPwmDetach(attachedPinB);
       parkPin(attachedPin,  inv);
       parkPin(attachedPinG, inv);
       parkPin(attachedPinB, inv);
@@ -562,13 +578,17 @@ static void detachAndForceLow() {
     case LED_DRV_PIXEL:
       pixelWrite(0, 0, 0);       // blank it before the RMT channel goes away
 #if HAS_LED_PIXEL
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+      if (pixelPin >= 0) { rmtDeinit(pixelPin); pixelPin = -1; }
+#else
       if (pixelRmt) { rmtDeinit(pixelRmt); pixelRmt = NULL; }
+#endif
 #endif
       parkPin(attachedPin, false);
       break;
     default:
-      ledcWrite(LED_PWM_CH, 0);
-      ledcDetachPin(attachedPin);
+      ledPwmWrite(LED_PWM_CH, 0);
+      ledPwmDetach(attachedPin);
       parkPin(attachedPin, false);
       break;
   }
@@ -586,12 +606,16 @@ static void detachAndForceLow() {
 static bool attachDriver(uint8_t drv, uint8_t pinR, uint8_t pinG, uint8_t pinB) {
   switch (drv) {
     case LED_DRV_RGB:
-      ledcSetup(LED_PWM_CH,   LED_PWM_FREQ, LED_PWM_RES);
-      ledcSetup(LED_PWM_CH_G, LED_PWM_FREQ, LED_PWM_RES);
-      ledcSetup(LED_PWM_CH_B, LED_PWM_FREQ, LED_PWM_RES);
-      ledcAttachPin(pinR, LED_PWM_CH);
-      ledcAttachPin(pinG, LED_PWM_CH_G);
-      ledcAttachPin(pinB, LED_PWM_CH_B);
+      if (!ledPwmAttach(pinR, LED_PWM_CH, LED_PWM_FREQ, LED_PWM_RES)) return false;
+      if (!ledPwmAttach(pinG, LED_PWM_CH_G, LED_PWM_FREQ, LED_PWM_RES)) {
+        ledPwmDetach(pinR);
+        return false;
+      }
+      if (!ledPwmAttach(pinB, LED_PWM_CH_B, LED_PWM_FREQ, LED_PWM_RES)) {
+        ledPwmDetach(pinR);
+        ledPwmDetach(pinG);
+        return false;
+      }
       attachedPinG = (int8_t)pinG;
       attachedPinB = (int8_t)pinB;
       break;
@@ -600,18 +624,25 @@ static bool attachDriver(uint8_t drv, uint8_t pinR, uint8_t pinG, uint8_t pinB) 
 #if !HAS_LED_PIXEL
       return false;               // driver compiled out on this board
 #else
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+      if (!rmtInit(pinR, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 10000000)) {
+        Serial.printf("LED: RMT init failed for WS2812 on pin %d\n", pinR);
+        return false;
+      }
+      pixelPin = pinR;
+#else
       pixelRmt = rmtInit(pinR, RMT_TX_MODE, RMT_MEM_64);
       if (!pixelRmt) {
         Serial.printf("LED: RMT init failed for WS2812 on pin %d\n", pinR);
         return false;
       }
       rmtSetTick(pixelRmt, 100);   // 100 ns per duration unit
+#endif
       break;
 #endif
 
     default:
-      ledcSetup(LED_PWM_CH, LED_PWM_FREQ, LED_PWM_RES);
-      ledcAttachPin(pinR, LED_PWM_CH);
+      if (!ledPwmAttach(pinR, LED_PWM_CH, LED_PWM_FREQ, LED_PWM_RES)) return false;
       break;
   }
 

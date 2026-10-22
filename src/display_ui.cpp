@@ -142,6 +142,9 @@ void markFrameDirty() {
 }
 
 void flushFrame() {
+#if defined(BOARD_IS_WS_P4_7B)
+  _tft_instance.display();  // write back only the modified framebuffer region
+#endif
 #if PANEL_REQUIRES_AXS_FRAME_SPRITE
   if (!g_axs_panel || !_frame_sprite.getBuffer()) return;
   unsigned long now = millis();
@@ -160,7 +163,7 @@ void flushFrame() {
 // at the sprite level (panel MADCTL stays at 0) while CYD/ws_lcd_200 use real
 // hardware MADCTL via LovyanGFX setRotation().
 static uint8_t sanitizeRotation(uint8_t r) {
-  return r;
+  return normalizeDisplayRotation(r);
 }
 
 // Use user-configured bg color instead of hardcoded CLR_BG
@@ -299,13 +302,19 @@ static uint8_t lastAppliedBrightness = 0;
 
 void setBacklight(uint8_t level) {
 #if defined(BACKLIGHT_PIN) && BACKLIGHT_PIN >= 0
+  #if defined(BOARD_IS_WS_P4_7B)
+  analogWrite(BACKLIGHT_PIN, 255 - level);  // LCD-7B backlight is active low
+  #else
   analogWrite(BACKLIGHT_PIN, level);
+  #endif
 #endif
   lastAppliedBrightness = level;
 }
 
 static void applyPanelInversion() {
-#if defined(BOARD_IS_DIY)
+#if defined(BOARD_IS_WS_P4_7B)
+  _tft_instance.invertDisplay(dispSettings.invertColors);
+#elif defined(BOARD_IS_DIY)
   // DIY class sets cfg.invert = DIY_INVERT; LovyanGFX's setInvert() XORs its
   // argument with cfg.invert, so pass the checkbox directly (checkbox off = the
   // DIY_INVERT baseline, on = flipped). Do NOT XOR DIY_INVERT again here.
@@ -497,7 +506,12 @@ void initDisplay() {
   // _tft_instance reference + tft_ptr already point at the same storage.
 #endif
   Serial.println("Display: calling _tft_instance.init()...");
-  _tft_instance.init();  // LovyanGFX configures SPI from the board class above
+  if (!_tft_instance.init()) {
+#if defined(BOARD_IS_WS_P4_7B)
+    Serial.println("LCD-7B initialization failed; check the selected P4 silicon revision and PSRAM");
+    while (true) delay(1000);
+#endif
+  }
   applyPanelInversion();
 #if defined(BOARD_IS_WS28C)
   ioExpanderSet(WS28C_EXP_LCD_CS, true);   // init commands done
@@ -524,7 +538,7 @@ void initDisplay() {
   // rotation is applied to the PSRAM sprite after tft_ptr is redirected.
   tft.setRotation(0);
 #else
-  tft.setRotation(dispSettings.rotation);
+  tft.setRotation(sanitizeRotation(dispSettings.rotation));
 #endif
   applyPanelInversion();
   Serial.println("Display: setRotation done");
@@ -561,6 +575,9 @@ void initDisplay() {
 
 #if defined(BACKLIGHT_PIN) && BACKLIGHT_PIN >= 0
   pinMode(BACKLIGHT_PIN, OUTPUT);
+#if defined(BOARD_IS_WS_P4_7B)
+  analogWriteFrequency(BACKLIGHT_PIN, 5000);
+#endif
   setBacklight(200);
 #endif
 
@@ -1329,12 +1346,12 @@ static void drawIdleDryingRound(PrinterSlot& p) {
     tft.fillRect(cx - LY_SC(60), LY_RND_G_Y + LY_SC(4),
                  LY_SC(120), LY_SC(24), CLR_BG);
     char buf[16];
-    if (u.humidityRaw > 0)
+    if (hasAmsHumidityPercent(u))
       snprintf(buf, sizeof(buf), "RH %u%%", u.humidityRaw);
     else
       snprintf(buf, sizeof(buf), "RH -");
     setFont(tft, LY_F_BODY);
-    tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, true), CLR_BG);
+    tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, true, u.humidityRawKnown), CLR_BG);
     tft.drawString(buf, cx, LY_RND_G_Y + LY_SC(16));
   }
 
@@ -1399,6 +1416,7 @@ static void drawIdleDrying(PrinterSlot& p) {
   static uint16_t prevDryMin = 0xFFFF;
   static uint8_t  prevHumidity = 0xFF;
   static uint8_t  prevHumRaw = 0xFF;
+  static bool prevHumKnown = false;
   static int16_t  prevTempShown = -32768;
   static uint8_t  prevDryProgress = 0xFF;
 
@@ -1410,7 +1428,7 @@ static void drawIdleDrying(PrinterSlot& p) {
   bool remainChanged = unitChanged || u.dryRemainMin != prevDryMin;
   bool humidityChanged = unitChanged ||
                          u.humidity != prevHumidity ||
-                         u.humidityRaw != prevHumRaw;
+                         u.humidityRaw != prevHumRaw || u.humidityRawKnown != prevHumKnown;
 
   // === Progress bar (top, y=0-5) ===
   uint8_t dryProgress = 0;
@@ -1443,6 +1461,7 @@ static void drawIdleDrying(PrinterSlot& p) {
     setFont(tft, FONT_BODY);
     tft.setTextColor(dispSettings.printerNameColor, CLR_BG);
     const char* name = (p.config.name[0] != '\0') ? p.config.name : "Bambu";
+    setFontForText(tft, name, FONT_BODY);
     tft.drawString(name, LY_HDR_NAME_X, dryHdrCY);
 
     // "DRYING" badge (right, orange)
@@ -1521,14 +1540,14 @@ static void drawIdleDrying(PrinterSlot& p) {
     if (humidityChanged) {
       if (!unitChanged) tft.fillRect(halfW, 114, scrW - halfW, 54, CLR_BG);
       char humBuf[8];
-      snprintf(humBuf, sizeof(humBuf), "%d%%", u.humidityRaw);
+      formatAmsHumidity(humBuf, sizeof(humBuf), u);
 
       tft.setTextDatum(MC_DATUM);
       setFont(tft, FONT_BODY);
       tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
       tft.drawString("Humidity", infoCx, 128);
       setFont(tft, FONT_LARGE);
-      tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present), CLR_BG);
+      tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present, u.humidityRawKnown), CLR_BG);
       tft.drawString(humBuf, infoCx, 152);
     }
   } else {
@@ -1571,11 +1590,11 @@ static void drawIdleDrying(PrinterSlot& p) {
       const int16_t humY = 200;
       tft.fillRect(0, humY - 14, SCREEN_W, 30, CLR_BG);
       char humBuf[24];
-      snprintf(humBuf, sizeof(humBuf), "Humidity: %d%%", u.humidityRaw);
+      formatAmsHumidity(humBuf, sizeof(humBuf), u, "Humidity: ");
 
       tft.setTextDatum(MC_DATUM);
       setFont(tft, FONT_LARGE);
-      tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present), CLR_BG);
+      tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present, u.humidityRawKnown), CLR_BG);
       tft.drawString(humBuf, cx, humY);
     }
   }
@@ -1616,11 +1635,11 @@ static void drawIdleDrying(PrinterSlot& p) {
   if (humidityChanged) {
     tft.fillRect(0, 158, SCREEN_W, 25, CLR_BG);
     char humBuf[24];
-    snprintf(humBuf, sizeof(humBuf), "Humidity: %d%%", u.humidityRaw);
+    formatAmsHumidity(humBuf, sizeof(humBuf), u, "Humidity: ");
 
     tft.setTextDatum(MC_DATUM);
     setFont(tft, FONT_BODY);
-    tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present), CLR_BG);
+    tft.setTextColor(amsHumidityColor(u.humidityRaw, u.humidity, u.present, u.humidityRawKnown), CLR_BG);
     tft.drawString(humBuf, cx, 170);
   }
 #endif
@@ -1686,6 +1705,7 @@ static void drawIdleDrying(PrinterSlot& p) {
   prevDryMin = u.dryRemainMin;
   prevHumidity = u.humidity;
   prevHumRaw = u.humidityRaw;
+  prevHumKnown = u.humidityRawKnown;
   prevTempShown = tempShown;
   prevDryProgress = dryProgress;
 }
@@ -1912,6 +1932,7 @@ static void drawIdle() {
     tft.setTextColor(dispSettings.printerNameColor, CLR_BG);
     setFont(tft, FONT_LARGE);
     const char* name = (p.config.name[0] != '\0') ? p.config.name : "Bambu P1S";
+    setFontForText(tft, name, FONT_BODY);
     tft.drawString(name, cx, lyIdleNameY);
 #endif
     markFrameDirty();
@@ -2071,7 +2092,7 @@ static void drawIdle() {
   bool idleTasmotaOnline = tasmotaIsActiveForSlot(rotState.displayIndex);
   float idleCurWatts = tasmotaGetWattsForSlot(rotState.displayIndex);
 
-  int16_t botCY = scrH - 9;
+  int16_t botCY = scrH - LY_SC(9);
   bool batChanged = batteryStateChanged();
   bool bottomChanged = batChanged ||
                        wifiChanged ||
@@ -2094,7 +2115,7 @@ static void drawIdle() {
     setFont(tft, LY_F_BODY);
     drawWifiSignalIndicator(s, LY_RND_IDLE_WIFI_Y);
 #else
-    tft.fillRect(0, scrH - 18, scrW, 18, CLR_BG);
+    tft.fillRect(0, scrH - LY_SC(18), scrW, LY_SC(18), CLR_BG);
     setFont(tft, FONT_BODY);
 
     // Left: filament circle (if AMS active) or WiFi signal
@@ -2128,7 +2149,7 @@ static void drawIdle() {
     // Ready screen has no layer count, so always show power (no alternation)
     bool showPower = idleTasmotaOnline;
     if (showPower) {
-      drawIcon16(tft, cx - 20, botCY - 8, icon_lightning, CLR_YELLOW);
+      drawIcon16(tft, cx - LY_SC(20), botCY - LY_ICON16 / 2, icon_lightning, CLR_YELLOW);
       char wBuf[8];
       snprintf(wBuf, sizeof(wBuf), "%.0fW", idleCurWatts);
       tft.setTextDatum(ML_DATUM);
@@ -2141,8 +2162,8 @@ static void drawIdle() {
       uint16_t clr = s.doorOpen ? dispSettings.doorOpenColor : dispSettings.doorClosedColor;
       tft.setTextDatum(MR_DATUM);
       tft.setTextColor(clr, CLR_BG);
-      if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, scrW - 20, botCY);
-      drawIcon16(tft, scrW - 18, botCY - 8,
+      if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, scrW - LY_ICON16 - LY_SC(4), botCY);
+      drawIcon16(tft, scrW - LY_ICON16 - LY_SC(2), botCY - LY_ICON16 / 2,
                  s.doorOpen ? icon_unlock : icon_lock, clr);
     }
 #endif // !DISPLAY_IS_ROUND
@@ -2379,17 +2400,17 @@ void drawAmsBarsGauge(int16_t cx, int16_t cy, int16_t radius,
   }
 
   const int16_t innerSize = radius * 2;
-  const int16_t barGap = 2;
+  const int16_t barGap = LY_SC(2);
   // Bar width is sized for the full 4-slot layout so a 1-tray HT unit shows a
   // single bar the same width as one bar in a 4-tray unit, just centered.
   int16_t barW = (innerSize - (AMS_TRAYS_PER_UNIT - 1) * barGap) / AMS_TRAYS_PER_UNIT;
   if (barW < 4) barW = 4;
-  if (barW > 18) barW = 18;
+  if (barW > LY_SC(18)) barW = LY_SC(18);
   // Reserve top space for the active-tray notch and bottom space so the slot
   // label ("AMS N") sits below the bars without clipping into them. Bars are
   // top-anchored — the saved height becomes the breathing room above the label.
   const int16_t barTopMargin    = 2;
-  const int16_t barLabelMargin  = 14;
+  const int16_t barLabelMargin  = LY_SC(14);
   int16_t barH = innerSize - barTopMargin - barLabelMargin;
   if (barH < 10) barH = 10;
   const int16_t totalW = barW * bars + (bars - 1) * barGap;
@@ -2689,7 +2710,7 @@ static void drawAmsZone(const BambuState& s, bool force) {
     const int16_t totalH = amsBot - LY_LAND_AMS_TOP;
     const int16_t groupGap = 6;
     const int16_t labelH = 16;  // font 2 label height below bars
-    const int16_t barGap = 2;   // gap between bars
+    const int16_t barGap = LY_SC(2);   // gap between bars
 
     // Find max tray count across units for bar width sizing
     uint8_t maxTC = 0;
@@ -2872,6 +2893,9 @@ struct SlotGrid {
 };
 
 static void computeSlotGrid(SlotGrid& g, const PrinterConfig& cfg, bool landscape) {
+#if defined(DISPLAY_1024x600)
+  landscape = true;
+#endif
   const bool eight = landscape && dispSettings.landscape8Slots;
 #if defined(LY_PORT9_GAUGE_R)
   const bool nine  = !landscape && dispSettings.portrait9Slots;
@@ -2888,7 +2912,7 @@ static void computeSlotGrid(SlotGrid& g, const PrinterConfig& cfg, bool landscap
   for (uint8_t i = 0; i < GAUGE_SLOT_COUNT; i++) g.types[i] = cfg.gaugeSlots[i];
 
   if (eight) {
-#if defined(LAYOUT_HAS_LANDSCAPE) && defined(LY_LAND8_COL1)
+#if defined(LY_LAND8_COL1) && (defined(LAYOUT_HAS_LANDSCAPE) || defined(DISPLAY_1024x600))
     const int16_t cs[4] = { LY_LAND8_COL1, LY_LAND8_COL2, LY_LAND8_COL3, LY_LAND8_COL4 };
     const int16_t rs[2] = { LY_LAND_ROW1,  LY_LAND_ROW2 };
     g.r = LY_GAUGE_R; g.count = 8;
@@ -3087,7 +3111,7 @@ bool gaugeTileValueChanged(uint8_t gt, const BambuState& s, const BambuState& p)
   if (gt >= GAUGE_AMS_HUM_1 && gt <= GAUGE_AMS_HUM_4) {
     uint8_t ui = gt - GAUGE_AMS_HUM_1;
     const AmsUnit& cu = s.ams.units[ui]; const AmsUnit& pu = p.ams.units[ui];
-    return cu.humidityRaw != pu.humidityRaw || cu.humidity != pu.humidity || cu.present != pu.present;
+    return cu.humidityRawKnown != pu.humidityRawKnown || cu.humidityRaw != pu.humidityRaw || cu.humidity != pu.humidity || cu.present != pu.present;
   }
   if (gt >= GAUGE_AMS_TEMP_1 && gt <= GAUGE_AMS_TEMP_4) {
     uint8_t ui = gt - GAUGE_AMS_TEMP_1;
@@ -3105,7 +3129,7 @@ bool gaugeTileValueChanged(uint8_t gt, const BambuState& s, const BambuState& p)
     // it is 1..100. A drift across a threshold (35/50/65) recolors the tile
     // while the coarse level stays put.
     if (cu.present != pu.present ||
-        (!isBars && (cu.humidity != pu.humidity || cu.humidityRaw != pu.humidityRaw)) ||
+        (!isBars && (cu.humidity != pu.humidity || cu.humidityRawKnown != pu.humidityRawKnown || cu.humidityRaw != pu.humidityRaw)) ||
         cu.trayCount != pu.trayCount) return true;
     if (isBars && s.ams.activeTray != p.ams.activeTray) return true;
     for (int tr = 0; tr < AMS_TRAYS_PER_UNIT; tr++) {
@@ -3293,7 +3317,7 @@ void drawGaugeTile(uint8_t gt, const BambuState& s, uint8_t slotIndex,
         uint8_t ui = gt - GAUGE_AMS_HUM_1;
         const AmsUnit& u = s.ams.units[ui];
         formatAmsNumberLabel(amsLbl, sizeof(amsLbl), ui);
-        drawHumidityGauge(tft, cx, cy, r, u.humidityRaw, u.humidity, u.present, amsLbl, fr);
+        drawHumidityGauge(tft, cx, cy, r, u.humidityRaw, u.humidity, u.present, amsLbl, fr, u.humidityRawKnown);
       } else if (gt >= GAUGE_AMS_TEMP_1 && gt <= GAUGE_AMS_TEMP_4) {
         uint8_t ui = gt - GAUGE_AMS_TEMP_1;
         const AmsUnit& u = s.ams.units[ui];
@@ -4355,6 +4379,7 @@ static void drawPrinting() {
     setFont(tft, FONT_BODY);
     tft.setTextColor(dispSettings.printerNameColor, hdrBg);
     const char* name = (p.config.name[0] != '\0') ? p.config.name : "Bambu P1S";
+    setFontForText(tft, name, FONT_BODY);
     tft.drawString(name, LY_HDR_NAME_X, hdrCY);
 
     // State badge (right) — only when right column not used for it.
@@ -4378,7 +4403,11 @@ static void drawPrinting() {
 
   // === AMS-view toggle (240x240 only): swap gauge row 2 for AMS strip ===
 #if defined(LAYOUT_240x240_AMS_VIEW)
-  const bool amsViewActive  = p.config.amsView;
+  const bool amsViewActive  = p.config.amsView
+#if defined(DISPLAY_1024x600)
+                          && !dispSettings.landscape8Slots
+#endif
+                          ;
   const bool amsHasContent  = s.ams.present && s.ams.trayUnitCount > 0;
   const bool amsStripVisible = amsViewActive && amsHasContent;
   static bool prevAmsViewActive   = false;
@@ -4513,7 +4542,7 @@ static void drawPrinting() {
             if (gt >= GAUGE_AMS_HUM_1 && gt <= GAUGE_AMS_HUM_4) {
               uint8_t ui = gt - GAUGE_AMS_HUM_1;
               const AmsUnit &cu = s.ams.units[ui], &pu = prevState.ams.units[ui];
-              needDraw = cu.humidityRaw != pu.humidityRaw || cu.humidity != pu.humidity || cu.present != pu.present;
+              needDraw = cu.humidityRawKnown != pu.humidityRawKnown || cu.humidityRaw != pu.humidityRaw || cu.humidity != pu.humidity || cu.present != pu.present;
             } else if (gt >= GAUGE_AMS_TEMP_1 && gt <= GAUGE_AMS_TEMP_4) {
               uint8_t ui = gt - GAUGE_AMS_TEMP_1;
               const AmsUnit &cu = s.ams.units[ui], &pu = prevState.ams.units[ui];
@@ -4532,7 +4561,7 @@ static void drawPrinting() {
                 // RH too - its humidity dot is colored by amsHumidityColor(),
                 // which prefers humidityRaw over the coarse level.
                 if (cu.present != pu.present
-                    || (!isBars && (cu.humidity != pu.humidity || cu.humidityRaw != pu.humidityRaw))
+                    || (!isBars && (cu.humidity != pu.humidity || cu.humidityRawKnown != pu.humidityRawKnown || cu.humidityRaw != pu.humidityRaw))
                     || cu.trayCount != pu.trayCount) needDraw = true;
               }
               if (!needDraw && isBars && s.ams.activeTray != prevState.ams.activeTray) {
@@ -4653,7 +4682,7 @@ static void drawPrinting() {
             uint8_t ui = gt - GAUGE_AMS_HUM_1;
             const AmsUnit& u = s.ams.units[ui];
             formatAmsNumberLabel(amsLbl, sizeof(amsLbl), ui);
-            drawHumidityGauge(tft, cx, cy, gR, u.humidityRaw, u.humidity, u.present, amsLbl, fr);
+            drawHumidityGauge(tft, cx, cy, gR, u.humidityRaw, u.humidity, u.present, amsLbl, fr, u.humidityRawKnown);
           } else if (gt >= GAUGE_AMS_TEMP_1 && gt <= GAUGE_AMS_TEMP_4) {
             uint8_t ui = gt - GAUGE_AMS_TEMP_1;
             const AmsUnit& u = s.ams.units[ui];
@@ -4751,15 +4780,33 @@ static void drawPrinting() {
     tft.setTextDatum(MC_DATUM);
 
     if (s.gcodeStateId == GCODE_PAUSE) {
-      setFont(tft, FONT_LARGE);
+      setFont(tft,
+#if defined(DISPLAY_1024x600)
+              FONT_BODY
+#else
+              FONT_LARGE
+#endif
+              );
       tft.setTextColor(CLR_YELLOW, CLR_BG);
       tft.drawString("PAUSED", etaCx, eff_etaTextY);
     } else if (printerWasCanceled(s)) {
-      setFont(tft, FONT_LARGE);
+      setFont(tft,
+#if defined(DISPLAY_1024x600)
+              FONT_BODY
+#else
+              FONT_LARGE
+#endif
+              );
       tft.setTextColor(CLR_YELLOW, CLR_BG);
       tft.drawString("CANCELED", etaCx, eff_etaTextY);
     } else if (s.gcodeStateId == GCODE_FAILED) {
-      setFont(tft, FONT_LARGE);
+      setFont(tft,
+#if defined(DISPLAY_1024x600)
+              FONT_BODY
+#else
+              FONT_LARGE
+#endif
+              );
       tft.setTextColor(CLR_RED, CLR_BG);
       tft.drawString("ERROR!", etaCx, eff_etaTextY);
     } else if (const char* stage = runningStageLabel(s)) {
@@ -4770,20 +4817,32 @@ static void drawPrinting() {
       tft.drawString(stage, etaCx, eff_etaTextY);
     } else if (s.remainingMinutes > 0) {
       char etaBuf[40];
-      setFont(tft, FONT_LARGE);   // set before formatting: it measures to fit
+      setFont(tft,
+#if defined(DISPLAY_1024x600)
+              FONT_BODY
+#else
+              FONT_LARGE
+#endif
+              );   // set before formatting: it measures to fit
       uint16_t clr = formatEtaLine(s.remainingMinutes, dispSettings.timeDisplayMode,
                                    /*labelRemaining=*/true, etaW - 4,
                                    etaBuf, sizeof(etaBuf));
       tft.setTextColor(clr, CLR_BG);
       tft.drawString(etaBuf, etaCx, eff_etaTextY);
     } else {
-      setFont(tft, FONT_LARGE);
+      setFont(tft,
+#if defined(DISPLAY_1024x600)
+              FONT_BODY
+#else
+              FONT_LARGE
+#endif
+              );
       tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
       tft.drawString("ETA: ---", etaCx, eff_etaTextY);
     }
   }
 
-#if defined(DISPLAY_320x480)
+#if defined(DISPLAY_320x480) || defined(DISPLAY_1024x600)
   // === File name line (320x480 only — fills the gap above the bottom bar) ===
   // Compare display names (not raw subtaskName): the calibration label can
   // change without the subtask changing, e.g. when print_type arrives late.
@@ -4796,7 +4855,13 @@ static void drawPrinting() {
     const int16_t fileCx = fileW / 2;
     tft.fillRect(0, LY_FILE_Y - LY_FILE_H / 2, fileW, LY_FILE_H, CLR_BG);
     if (fileName[0] != '\0') {
-      setFont(tft, FONT_BODY);
+      setFontForText(tft, fileName,
+#if defined(DISPLAY_1024x600)
+                     FONT_SMALL
+#else
+                     FONT_BODY
+#endif
+                     );
       tft.setTextDatum(MC_DATUM);
       tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
       drawStringClipped(fileName, fileCx, LY_FILE_Y, fileW - 20);
@@ -4878,7 +4943,7 @@ static void drawPrinting() {
     const int16_t rightLabelW = rightIsDoor
         ? (gaugeLabels.door[0] ? tft.textWidth(gaugeLabels.door) : 0)
         : tft.textWidth(speedLevelName(s.speedLevel));
-    const int16_t rightAnchorX = rightIsDoor ? (botW - 20) : (botW - 4);  // MR datum
+    const int16_t rightAnchorX = rightIsDoor ? (botW - LY_ICON16 - LY_SC(4)) : (botW - LY_SC(4));  // MR datum
     const int16_t rightLeftX   = rightAnchorX - rightLabelW;              // left edge
 
     // Predict center text so we can clamp the filament name's right edge
@@ -4936,7 +5001,7 @@ static void drawPrinting() {
     if (hideReadout) {
       // nothing in the center — filament name already used the freed width
     } else if (showPowerNow) {
-      drawIcon16(tft, botCx - 20, eff_botCY - 8, icon_lightning, CLR_YELLOW);
+      drawIcon16(tft, botCx - LY_SC(20), eff_botCY - LY_ICON16 / 2, icon_lightning, CLR_YELLOW);
       tft.setTextDatum(ML_DATUM);
       tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
       tft.drawString(centerBuf, botCx - 2, eff_botCY);
@@ -4953,7 +5018,7 @@ static void drawPrinting() {
       tft.setTextDatum(MR_DATUM);
       tft.setTextColor(clr, CLR_BG);
       if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, rightAnchorX, eff_botCY);
-      drawIcon16(tft, rightAnchorX + 2, eff_botCY - 8,
+      drawIcon16(tft, rightAnchorX + LY_SC(2), eff_botCY - LY_ICON16 / 2,
                  s.doorOpen ? icon_unlock : icon_lock, clr);
     } else {
       tft.setTextDatum(MR_DATUM);
@@ -5140,6 +5205,7 @@ static void drawFinished() {
     setFont(tft, FONT_BODY);
     tft.setTextColor(dispSettings.printerNameColor, hdrBg);
     const char* name = (p.config.name[0] != '\0') ? p.config.name : "Printer";
+    setFontForText(tft, name, FONT_BODY);
     tft.drawString(name, LY_HDR_NAME_X, finHdrCY);
 
     // Status badge (right). FINISH unless the shared override ladder claims the
@@ -5331,7 +5397,7 @@ static void drawFinished() {
       drawWifiSignalIndicator(s, eff_finWifiY);
 
       if (tasmotaActiveHere) {
-        drawIcon16(tft, cx - 20, eff_finWifiY - 8, icon_lightning, CLR_YELLOW);
+        drawIcon16(tft, cx - LY_SC(20), eff_finWifiY - LY_ICON16 / 2, icon_lightning, CLR_YELLOW);
         char wBuf[8];
         snprintf(wBuf, sizeof(wBuf), "%.0fW", finCurWatts);
         tft.setTextDatum(ML_DATUM);
@@ -5345,8 +5411,8 @@ static void drawFinished() {
       tft.setTextDatum(MR_DATUM);
       setFont(tft, FONT_SMALL);
       tft.setTextColor(clr, CLR_BG);
-      if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, scrW - 20, eff_finWifiY);
-      drawIcon16(tft, scrW - 18, eff_finWifiY - 8,
+      if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, scrW - LY_ICON16 - LY_SC(4), eff_finWifiY);
+      drawIcon16(tft, scrW - LY_ICON16 - LY_SC(2), eff_finWifiY - LY_ICON16 / 2,
                  s.doorOpen ? icon_unlock : icon_lock, clr);
     }
   }
@@ -5507,7 +5573,7 @@ static void drawPowerConfirm() {
 #if defined(DISPLAY_320x480)
   const int16_t RR = 72, RT = 16;
   const int16_t YSH = 34;               // raise the whole confirm stack
-#elif defined(DISPLAY_480x480)
+#elif defined(DISPLAY_480x480) || defined(DISPLAY_1024x600)
   const int16_t RR = 84, RT = 18;
   const int16_t YSH = 0;
 #elif defined(DISPLAY_ROUND_480)
@@ -6067,7 +6133,7 @@ void updateDisplay() {
     prev9Slots = dispSettings.portrait9Slots;
   }
 
-  if (!cardSkinActive()) cardRelease();   // style switched off: give the RAM back on any screen
+  if (!cardSkinActive() && currentScreen != SCREEN_AMS) cardRelease();
   cardShownNow = false;
   switch (currentScreen) {
     case SCREEN_SPLASH:
@@ -6127,6 +6193,12 @@ void updateDisplay() {
     case SCREEN_HMS:
 #if HAS_HMS_UI
       drawHmsScreen();
+#endif
+      break;
+
+    case SCREEN_AMS:
+#if defined(BOARD_IS_WS_P4_7B)
+      drawAmsOverview(displayedPrinter(), forceRedraw);
 #endif
       break;
 

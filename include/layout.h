@@ -10,7 +10,9 @@
 // derives DISPLAY_IS_ROUND, so that capability is still undefined here and
 // would silently select layout_default.h.
 
-#if defined(DISPLAY_480x480)
+#if defined(DISPLAY_1024x600)
+  #include "layout_1024x600.h"  // Waveshare ESP32-P4 LCD-7B, native landscape
+#elif defined(DISPLAY_480x480)
   #include "layout_480x480.h"    // SenseCAP Indicator: ST7701S 480x480
 #elif defined(DISPLAY_ROUND_480)
   #include "layout_round480.h"  // ST7701 2.8" round 480x480

@@ -143,6 +143,14 @@ static bool resolvePlaceholder(const char* name, String& out) {
   if (strcmp(name, "CLK_HIDEDATE") == 0) { out = dispSettings.hideClockDate ? "checked" : ""; return true; }
 
   // --- Display rotation ---
+  if (strcmp(name, "ROT_PORTRAIT_ATTR") == 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+    out = "hidden disabled";
+#else
+    out = "";
+#endif
+    return true;
+  }
   if (strncmp(name, "ROT", 3) == 0 && name[3] >= '0' && name[3] <= '3' && name[4] == '\0') {
     out = dispSettings.rotation == (name[3] - '0') ? "selected" : "";
     return true;
@@ -315,6 +323,11 @@ static bool resolvePlaceholder(const char* name, String& out) {
   if (strcmp(name, "GESTURE_ROWS") == 0) {
     // AMS page entries only where the Cards style exists; data-ams lets the
     // page hide them while the Gauges style is picked.
+#if defined(BOARD_IS_WS_P4_7B)
+    const bool definedP4Ams = true;
+#else
+    const bool definedP4Ams = false;
+#endif
     auto opt = [&](uint8_t cur, uint8_t v, const char* label, bool ams = false) {
       out += "<option value=\""; out += v; out += "\""; if (cur == v) out += " selected";
       if (ams) out += " data-ams=\"1\"";
@@ -325,7 +338,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
     opt(dispSettings.gestTap, GT_SMART, "Smart cycle (errors, camera, drying, AMS, next printer)");
     opt(dispSettings.gestTap, GT_NEXT,  "Next printer only");
 #if HAS_CARD_SKIN
-    opt(dispSettings.gestTap, GT_AMS,   "Switch status / AMS page", true);
+    opt(dispSettings.gestTap, GT_AMS,   "Switch status / AMS page", !definedP4Ams);
 #endif
     opt(dispSettings.gestTap, GT_WAKE,  "Wake the screen only");
     out += "</select></div>";
@@ -334,7 +347,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
     opt(dispSettings.gestDouble, GD_OFF,  "Nothing");
     opt(dispSettings.gestDouble, GD_PLUG, "Plug power on/off (confirm screen)");
 #if HAS_CARD_SKIN
-    opt(dispSettings.gestDouble, GD_AMS,  "Switch status / AMS page", true);
+    opt(dispSettings.gestDouble, GD_AMS,  "Switch status / AMS page", !definedP4Ams);
 #endif
     opt(dispSettings.gestDouble, GD_NEXT, "Next printer");
     out += "</select><span class=\"text-dim small\">With a double tap set, a single tap waits ~0.5 s for a second one.</span></div>";
@@ -342,7 +355,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
     out += "<select id=\"ghold\" onchange=\"toggleSetting('ghold',this.value)\">";
     opt(dispSettings.gestHold, GH_LED,  "Status LED brightness");
 #if HAS_CARD_SKIN
-    opt(dispSettings.gestHold, GH_AMS,  "Switch status / AMS page", true);
+    opt(dispSettings.gestHold, GH_AMS,  "Switch status / AMS page", !definedP4Ams);
 #endif
     opt(dispSettings.gestHold, GH_NONE, "Nothing");
     out += "</select>";
@@ -350,7 +363,9 @@ static bool resolvePlaceholder(const char* name, String& out) {
     out += "<span class=\"text-dim small\">This touchscreen often reads a wake touch as a hold.</span>";
 #endif
     out += "</div>";
-#if HAS_CARD_SKIN
+#if defined(BOARD_IS_WS_P4_7B)
+    out += "<div class=\"help-text\">Tap the screen to view all AMS trays, humidity and temperature; tap again to return. The AMS page closes after 30 s.</div>";
+#elif HAS_CARD_SKIN
     out += "<div class=\"help-text\" id=\"gestAmsNote\"><em>Switch status / AMS page</em> shows the other view on Ready and Print complete for 30 s.</div>";
 #endif
     return true;
@@ -475,7 +490,13 @@ static bool resolvePlaceholder(const char* name, String& out) {
   if (strcmp(name, "EXTENDED_MODES_CARD") == 0) {
     // Card lives in the Print screen section. Only renders on layouts that
     // actually have extended grid modes, otherwise the whole card is empty.
-#if defined(DISPLAY_240x320) || defined(DISPLAY_320x480)
+#if defined(DISPLAY_1024x600)
+    out = "<div class=\"card\" data-gauges-only><div class=\"card-head\"><div><h3>Extended grid mode</h3>"
+          "<p>Show eight gauges on the seven-inch display. Set the extra gauges under Gauge Layout.</p></div></div>"
+          "<label class=\"check-row\"><input type=\"checkbox\" id=\"l8s\" value=\"1\" ";
+    if (dispSettings.landscape8Slots) out += "checked ";
+    out += "onchange=\"toggleGridMode('l8s',this.checked)\"><label for=\"l8s\">8 gauge slots (2x4 grid)</label></label></div>";
+#elif defined(DISPLAY_240x320) || defined(DISPLAY_320x480)
     out  = "<div class=\"card\" data-gauges-only>";  // Cards never reads l8s/p9s
     out += "<div class=\"card-head\"><div><h3>Extended grid modes</h3>";
     out += "<p>Trade the on-screen AMS area for extra gauge slots. ";
@@ -506,7 +527,13 @@ static bool resolvePlaceholder(const char* name, String& out) {
     // don't render anything here so the user isn't offered settings the
     // device can't use. Inline display:none reflects the toggle's state at
     // render time; toggleGridMode() in the Print screen section keeps it in sync.
-#if defined(DISPLAY_240x320) || defined(DISPLAY_320x480)
+#if defined(DISPLAY_1024x600)
+    out = "<div id=\"landExtrasGroup\"";
+    if (!dispSettings.landscape8Slots) out += " style=\"display:none\"";
+    out += "><div class=\"row-divider\">Extra gauges (8-slot grid)</div><div class=\"gauge-grid\">"
+           "<div class=\"cell\"><label>Extra 1</label><select id=\"lx0\" class=\"gauge-slot-sel\"></select></div>"
+           "<div class=\"cell\"><label>Extra 2</label><select id=\"lx1\" class=\"gauge-slot-sel\"></select></div></div></div>";
+#elif defined(DISPLAY_240x320) || defined(DISPLAY_320x480)
     out  = "<div id=\"landExtrasGroup\"";
     if (!dispSettings.landscape8Slots) out += " style=\"display:none\"";
     out += "><div class=\"row-divider\">&#9656; Landscape extras (column 4, used by <em>Landscape 8 slots</em>)</div>";
@@ -580,6 +607,9 @@ static bool resolvePlaceholder(const char* name, String& out) {
     out += "<input type=\"checkbox\" id=\"amsv\" value=\"1\" onchange=\"syncAmsView()\">";
     out += "<label for=\"amsv\">AMS view (replaces bottom gauges)</label>";
     out += "</label>";
+#if defined(BOARD_IS_WS_P4_7B)
+    out += "<button type=\"button\" class=\"btn btn-ghost btn-sm\" onclick=\"showDeviceAms()\">Switch device status / AMS page</button>";
+#endif
 #else
     out = "";
 #endif

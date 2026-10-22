@@ -506,9 +506,9 @@ R"rawliteral(
       <label for="rotation">Screen orientation</label>
       <select id="rotation">
         <option value="0" %ROT0%>0&deg; (default)</option>
-        <option value="1" %ROT1%>90&deg;</option>
+        <option value="1" %ROT1% %ROT_PORTRAIT_ATTR%>90&deg;</option>
         <option value="2" %ROT2%>180&deg;</option>
-        <option value="3" %ROT3%>270&deg;</option>
+        <option value="3" %ROT3% %ROT_PORTRAIT_ATTR%>270&deg;</option>
       </select>
     </div>
   </div>

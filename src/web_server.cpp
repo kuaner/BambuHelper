@@ -1,5 +1,6 @@
 #include "web_server.h"
 #include <new>
+#include <memory>
 #include "web_template.h"
 #include "settings.h"
 #include "bambu_state.h"
@@ -16,6 +17,7 @@
 #include "display_edge_glow.h"
 #include "config.h"
 #include "button.h"
+#include "button_touch_backend.h"
 #include "buzzer.h"
 #include "led.h"
 #include "timezones.h"
@@ -24,14 +26,14 @@
 #include "clock_pong.h"
 #include "hms_lookup.h"
 #include <WebServer.h>
+#include <WiFi.h>
 #include <ArduinoJson.h>
 #include <Update.h>
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #ifdef ENABLE_OTA_AUTO
 #include <HTTPUpdate.h>
-#include <WiFiClientSecure.h>
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+#include "cloud_tls.h"
 #endif
 
 // Global WebServer instance. Defined here, referenced from src/web_template.cpp
@@ -89,7 +91,7 @@ static void readDisplayFromForm() {
 
   if (server.hasArg("rotation")) {
     uint8_t rot = server.arg("rotation").toInt();
-    if (rot <= 3) dispSettings.rotation = rot;
+    if (rot <= 3) dispSettings.rotation = normalizeDisplayRotation(rot);
   }
   if (server.hasArg("clr_bg"))    dispSettings.bgColor = htmlToRgb565(server.arg("clr_bg").c_str());
   if (server.hasArg("clr_track")) dispSettings.trackColor = htmlToRgb565(server.arg("clr_track").c_str());
@@ -673,6 +675,21 @@ static void handleDebug() {
     p["last_pushall_age_s"] = d.lastPushallMs > 0 ? (now - d.lastPushallMs) / 1000UL : 0;
     p["last_update_age_s"] = st.lastUpdate > 0 ? (now - st.lastUpdate) / 1000UL : 0;
     p["last_print_data_age_s"] = st.lastPrintDataMs > 0 ? (now - st.lastPrintDataMs) / 1000UL : 0;
+#if defined(BOARD_IS_WS_P4_7B)
+    p["ams_units"] = st.ams.unitCount;
+    p["ams_tray_units"] = st.ams.trayUnitCount;
+    p["ams_active_tray"] = st.ams.activeTray;
+    JsonArray amsUnits = p["ams"].to<JsonArray>();
+    for (uint8_t ai = 0; ai < st.ams.unitCount && ai < AMS_MAX_UNITS; ++ai) {
+      const AmsUnit& unit = st.ams.units[ai];
+      JsonObject a = amsUnits.add<JsonObject>();
+      a["id"] = unit.id;
+      a["humidity_level"] = unit.humidity;
+      a["humidity_percent_known"] = unit.humidityRawKnown;
+      if (hasAmsHumidityPercent(unit)) a["humidity_percent"] = unit.humidityRaw;
+      a["temperature"] = unit.temp;
+    }
+#endif
 #if HAS_HMS_UI
     // Printer errors. The portal card and /status get their own shaped fields
     // later; this is the raw diagnostic view.
@@ -735,6 +752,16 @@ static void handleDebug() {
   doc["reset_reason"] = resetReasonText(esp_reset_reason());
   doc["rssi"] = WiFi.RSSI();
   doc["debug_log"] = mqttDebugLog;
+#if defined(BOARD_IS_WS_P4_7B)
+  const TouchDiagnostics td = touchDiagnostics();
+  JsonObject touch = doc["touch"].to<JsonObject>();
+  touch["ready"] = td.ready;
+  touch["down"] = td.down;
+  touch["frames"] = td.frames;
+  touch["presses"] = td.presses;
+  touch["read_errors"] = td.readErrors;
+  doc["screen"] = getScreenState() == SCREEN_AMS ? "ams" : "status";
+#endif
   {
     // Settings-storage pressure. free_entries overcounts (erased-but-not-yet-
     // collected entries ride along), so used/total is the number a support
@@ -765,6 +792,15 @@ static void handleDebug() {
 // bandH > 0: buf is a Card band, re-rendered via cardBandView() as rows advance.
 static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t bandH) {
   const uint32_t rowBytes = ((uint32_t)w * 3 + 3) & ~3u;
+#if defined(BOARD_IS_WS_P4_7B)
+  constexpr uint8_t chunkRows = 8;
+  constexpr uint32_t maxSendMs = 15000;
+#else
+  constexpr uint8_t chunkRows = 1;
+  constexpr uint32_t maxSendMs = 5000;
+#endif
+  std::unique_ptr<uint8_t[]> row(new (std::nothrow) uint8_t[rowBytes * chunkRows]);
+  if (!row) { server.send(503, "text/plain", "No screenshot row buffer"); return; }
   const uint32_t dataSize = rowBytes * h, fileSize = 54 + dataSize;
   uint8_t hdr[54] = {'B', 'M'};
   auto put32 = [&](int off, uint32_t v) { for (int i = 0; i < 4; i++) hdr[off + i] = (uint8_t)(v >> (8 * i)); };
@@ -773,13 +809,13 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
   server.setContentLength(fileSize);
   server.send(200, "image/bmp", "");
   server.sendContent((const char*)hdr, sizeof(hdr));
-  uint8_t row[480 * 3 + 4];
-  if (rowBytes > sizeof(row)) return;
   const unsigned long t0 = millis();
+  uint8_t pendingRows = 0;
   for (int16_t y = h - 1; y >= 0; y--) {          // BMP rows run bottom-up
     // A slow or vanished client must not hold the loop (display, MQTT) hostage.
-    if (!server.client().connected() || millis() - t0 > 5000) { server.client().stop(); return; }
-    memset(row, 0, rowBytes);
+    if (!server.client().connected() || millis() - t0 > maxSendMs) { server.client().stop(); return; }
+    uint8_t* out = row.get() + rowBytes * pendingRows;
+    memset(out, 0, rowBytes);
     int16_t ly = y;
     if (bandH) {
       const int16_t y0 = y - y % bandH;
@@ -793,11 +829,14 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
     for (int16_t x = 0; x < w; x++) {
       uint16_t v = (uint16_t)((src[x] >> 8) | (src[x] << 8));   // sprite stores swapped RGB565
       uint8_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
-      row[x * 3 + 0] = (uint8_t)((b << 3) | (b >> 2));
-      row[x * 3 + 1] = (uint8_t)((g << 2) | (g >> 4));
-      row[x * 3 + 2] = (uint8_t)((r << 3) | (r >> 2));
+      out[x * 3 + 0] = (uint8_t)((b << 3) | (b >> 2));
+      out[x * 3 + 1] = (uint8_t)((g << 2) | (g >> 4));
+      out[x * 3 + 2] = (uint8_t)((r << 3) | (r >> 2));
     }
-    server.sendContent((const char*)row, rowBytes);
+    if (++pendingRows == chunkRows || y == 0) {
+      server.sendContent((const char*)row.get(), rowBytes * pendingRows);
+      pendingRows = 0;
+    }
   }
 }
 
@@ -1052,6 +1091,14 @@ static void handleCloudPrinters() {
   serializeJson(out, body);
   server.send(200, "application/json", body);
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+static void handleCloudDiagnostics() {
+  String result;
+  cloudDiagnostics(printers[0].config.region, result);
+  server.send(200, "application/json", result);
+}
+#endif
 
 #if HAS_CLOUD_LOGIN
 
@@ -2117,7 +2164,7 @@ static void handleSettingsImportFinish() {
   JsonObject disp = doc["display"];
   if (disp) {
     if (disp["brightness"].is<uint8_t>()) brightness = disp["brightness"].as<uint8_t>();
-    if (disp["rotation"].is<uint8_t>())   dispSettings.rotation = disp["rotation"].as<uint8_t>();
+    if (disp["rotation"].is<uint8_t>())   dispSettings.rotation = normalizeDisplayRotation(disp["rotation"].as<uint8_t>());
     if (disp["bgColor"].is<const char*>())    dispSettings.bgColor = htmlToRgb565(disp["bgColor"]);
     if (disp["trackColor"].is<const char*>()) dispSettings.trackColor = htmlToRgb565(disp["trackColor"]);
     if (disp["progressBarColor"].is<const char*>()) dispSettings.progressBarColor = htmlToRgb565(disp["progressBarColor"]);
@@ -2466,7 +2513,7 @@ static void otaAutoTaskFn(void* param) {
   disableCore0WDT();
 
   WiFiClientSecure client;
-  client.setCACertBundle(rootca_crt_bundle_start);
+  configureCloudTrust(client);
 
   httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   httpUpdate.onProgress([](int cur, int total) {
@@ -2821,6 +2868,13 @@ void initWebServer() {
   server.on("/debug", HTTP_GET, handleDebug);
   server.on("/card.bmp", HTTP_GET, handleCardBmp);
   server.on("/screen.bmp", HTTP_GET, handleScreenBmp);
+#if defined(BOARD_IS_WS_P4_7B)
+  server.on("/display/ams", HTTP_POST, []() {
+    bool changed = toggleAmsPage();
+    server.send(changed ? 200 : 409, "application/json",
+      changed ? "{\"status\":\"ok\"}" : "{\"status\":\"error\",\"message\":\"No AMS data available on this screen\"}");
+  });
+#endif
   server.on("/debug/toggle", HTTP_POST, handleDebugToggle);
   server.on("/save/toggle", HTTP_POST, handleToggleSetting);
   server.on("/glow/test", HTTP_POST, handleGlowTest);
@@ -2828,6 +2882,9 @@ void initWebServer() {
   server.on("/app.js", HTTP_GET, handleAppJs);
   server.on("/cloud/logout", HTTP_POST, handleCloudLogout);
   server.on("/cloud/printers", HTTP_GET, handleCloudPrinters);
+#if defined(BOARD_IS_WS_P4_7B)
+  server.on("/cloud/diagnostics", HTTP_GET, handleCloudDiagnostics);
+#endif
 #if HAS_CLOUD_LOGIN
   server.on("/cloud/login", HTTP_POST, handleCloudLoginStart);
   server.on("/cloud/login/code", HTTP_POST, handleCloudLoginCode);

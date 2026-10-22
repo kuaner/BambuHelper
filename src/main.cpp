@@ -20,6 +20,9 @@
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <time.h>
+#if defined(BOARD_IS_WS_P4_7B)
+#include <esp32-hal-hosted.h>
+#endif
 
 static unsigned long splashEnd = 0;
 static unsigned long finishScreenStart = 0;
@@ -78,6 +81,36 @@ static volatile bool pcSendingDrawn  = false;
 // what a single drying unit still gets; see openDryPeek() for the multi-unit case.
 static const uint32_t DRY_PEEK_MS = 10000;
 static uint32_t dryPeekUntilMs = 0;
+
+#if defined(BOARD_IS_WS_P4_7B)
+static uint32_t amsPeekUntilMs = 0;
+static ScreenState amsReturnScreen = SCREEN_IDLE;
+
+static bool p4AmsAvailable() {
+  const BambuState& s = displayedPrinter().state;
+  return s.connected && ((s.ams.present && s.ams.unitCount > 0) || s.ams.vtPresent);
+}
+
+static void closeAmsOverview() {
+  rotState.lastRotateMs = millis();
+  setScreenState(amsReturnScreen);
+}
+#endif
+
+bool toggleAmsPage() {
+#if defined(BOARD_IS_WS_P4_7B)
+  const ScreenState cur = getScreenState();
+  if (cur == SCREEN_AMS) { closeAmsOverview(); return true; }
+  if (!p4AmsAvailable()) return false;
+  if (cur != SCREEN_IDLE && cur != SCREEN_PRINTING && cur != SCREEN_FINISHED) return false;
+  amsReturnScreen = cur;
+  amsPeekUntilMs = millis() + 30000;
+  setScreenState(SCREEN_AMS);
+  return true;
+#else
+  return cardAmsPeekToggle(displayedPrinter().state);
+#endif
+}
 
 static bool isPrinterActivityStateFresh(uint8_t slot) {
   if (slot >= MAX_ACTIVE_PRINTERS || !isPrinterConfigured(slot)) return false;
@@ -329,6 +362,10 @@ static void applyFinishDryView() {
 static void doTapActions() {
   ScreenState cur = getScreenState();
 
+#if defined(BOARD_IS_WS_P4_7B)
+  if (cur == SCREEN_AMS) { closeAmsOverview(); return; }
+#endif
+
   // Night blackout: lift it first so the setBacklight() calls below resolve to
   // the wake level instead of 0. On a live screen (IDLE / PRINTING / ...) the
   // press then stops here - it would otherwise fall through into the tap cycle
@@ -383,6 +420,11 @@ static void doTapActions() {
   }
   if ((cur == SCREEN_PRINTING || cur == SCREEN_IDLE || cur == SCREEN_FINISHED) &&
       hmsScreenAlerting() && openHmsScreen(HMS_SCREEN_MS)) return;
+
+#if defined(BOARD_IS_WS_P4_7B)
+  if (dispSettings.gestDouble != GD_AMS && dispSettings.gestHold != GH_AMS &&
+      toggleAmsPage()) return;
+#endif
 
 #if BOARD_HAS_CAMERA
   // Camera tap toggle (#120). On a multi-printer setup the camera sits in the
@@ -498,7 +540,12 @@ static const uint32_t GESTURE_HOLD_MS = 600;
 
 static bool amsGestureAvailable() {
   ScreenState s = getScreenState();
+#if defined(BOARD_IS_WS_P4_7B)
+  return p4AmsAvailable() && (s == SCREEN_AMS || s == SCREEN_PRINTING ||
+                            s == SCREEN_IDLE || s == SCREEN_FINISHED);
+#else
   return cardOnScreen() && (s == SCREEN_IDLE || s == SCREEN_FINISHED);   // not drying / printer off
+#endif
 }
 
 static bool nextPrinterGestureAvailable() {
@@ -521,7 +568,7 @@ static bool doubleTapArmedForSlot(uint8_t slot) {
 static void runDoubleTap(uint8_t slot) {
   switch (dispSettings.gestDouble) {
     case GD_PLUG: openPowerConfirm(slot); break;
-    case GD_AMS:  cardAmsPeekToggle(displayedPrinter().state); break;
+    case GD_AMS:  toggleAmsPage(); break;
     case GD_NEXT: cycleDisplayedPrinterFromButton(); break;
     default:      break;
   }
@@ -531,7 +578,7 @@ static void runSingleTap() {
   ScreenState cur = getScreenState();
   // Waking and closing an open overlay work the same whatever the mapping.
   bool passThrough = isNightBlackout() || isSleepStickyScreen(cur) ||
-                     cur == SCREEN_HMS || cur == SCREEN_DRY_PEEK;
+                     cur == SCREEN_HMS || cur == SCREEN_DRY_PEEK || cur == SCREEN_AMS;
 #if BOARD_HAS_CAMERA
   if (cur == SCREEN_CAMERA) passThrough = true;
 #endif
@@ -541,7 +588,7 @@ static void runSingleTap() {
       if (getActiveConnCount() >= 2) cycleDisplayedPrinterFromButton();
       break;
     case GT_AMS:
-      if (amsGestureAvailable()) cardAmsPeekToggle(displayedPrinter().state);
+      if (amsGestureAvailable()) toggleAmsPage();
       else doTapActions();
       break;
     default:                                         // GT_WAKE: nothing on a live screen
@@ -701,7 +748,12 @@ static void handleWakeButton() {
 
   // Hold gesture: LED dimming only when it is mapped there.
   const bool holdLed = dispSettings.gestHold == GH_LED && ledSettings.enabled;
-  const bool holdAms = dispSettings.gestHold == GH_AMS && cardSkinActive();
+  const bool holdAms = dispSettings.gestHold == GH_AMS &&
+#if defined(BOARD_IS_WS_P4_7B)
+                       amsGestureAvailable();
+#else
+                       cardSkinActive();
+#endif
 
   // Tick the dimmer every loop regardless of state - it owns the 2 s save debounce.
   bool holdConsumed = ledHoldDimUpdate(held, holdMs, suppressDim || !holdLed);
@@ -732,7 +784,7 @@ static void handleWakeButton() {
              amsGestureAvailable()) {
     amsHoldFired = true;
     pcPendingClicks = 0;
-    cardAmsPeekToggle(displayedPrinter().state);
+    toggleAmsPage();
   }
   if (amsHoldFired) holdConsumed = true;
 
@@ -955,6 +1007,19 @@ static void updateDisplayedPrinterScreenState() {
   // so an auto-OTA still preempts it.
   if (current == SCREEN_POWER_CONFIRM) return;
 
+#if defined(BOARD_IS_WS_P4_7B)
+  if (current == SCREEN_AMS) {
+    if (p4AmsAvailable() && (int32_t)(millis() - amsPeekUntilMs) < 0) {
+      if (displayedPrinter().state.printing)
+        ledSetActivity(displayedPrinter().state.gcodeStateId == GCODE_PAUSE
+                         ? LED_ACT_PAUSED : LED_ACT_PRINTING);
+      return;
+    }
+    closeAmsOverview();
+    return;
+  }
+#endif
+
   // Printer error detail is sticky for its window: hold it against the auto
   // state machine until the user taps out, the error clears, or the window runs
   // down. Above camera and the drying peek so neither steals it; below OTA and
@@ -1113,6 +1178,12 @@ static void handleDisplaySleepTimeouts() {
   // updateDisplayedPrinterScreenState() which is gated on WiFi being up - a
   // normal STA drop does not change the screen and AP fallback can be 15 min
   // away, so without this the peek would sit there for the whole outage.
+#if defined(BOARD_IS_WS_P4_7B)
+  if (cur == SCREEN_AMS && ((int32_t)(millis() - amsPeekUntilMs) >= 0 || !p4AmsAvailable())) {
+    closeAmsOverview();
+    cur = getScreenState();
+  }
+#endif
   if (cur == SCREEN_DRY_PEEK && (long)(millis() - dryPeekUntilMs) >= 0) {
     closeDryPeek();
     cur = getScreenState();
@@ -1575,6 +1646,12 @@ void setup() {
 #endif
   Serial.begin(115200);
   Serial.printf("\n=== BambuHelper %s Starting ===\n", FW_VERSION);
+#if defined(BOARD_IS_WS_P4_7B)
+  // Set before the first WiFi call; the radio is an ESP32-C6 SDIO slave.
+  if (!hostedSetPins(18, 19, 14, 15, 16, 17, 54)) {
+    Serial.println("LCD-7B: failed to configure ESP-Hosted SDIO pins");
+  }
+#endif
 
   loadSettings();
   recordBootSlotVersion();  // names this slot's fw for the OTA rollback UI
@@ -1665,6 +1742,7 @@ void loop() {
     if (getScreenState() != SCREEN_CAMERA &&
         getScreenState() != SCREEN_POWER_CONFIRM &&
         getScreenState() != SCREEN_HMS &&
+        getScreenState() != SCREEN_AMS &&
         getScreenState() != SCREEN_DRY_PEEK) handleRotation();
   }
 

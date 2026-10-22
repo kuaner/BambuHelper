@@ -28,7 +28,11 @@ namespace {
 // Mirrors display_ui.cpp isLandscape(): rotations 1/3 swap the panel to a wide
 // orientation, which switches the split to two side-by-side bands.
 bool splitIsLandscape() {
+#if defined(DISPLAY_1024x600)
+  return true;
+#else
   return dispSettings.rotation == 1 || dispSettings.rotation == 3;
+#endif
 }
 #endif
 
@@ -98,6 +102,7 @@ bool buildSplitEta(const BambuState& s, char* buf, size_t n, int16_t maxW) {
 // Draw the printer name left-aligned at (x, cy), trimming with a ".." suffix if
 // it would run into the state dot. Assumes the caller already set the font.
 void drawClippedName(const char* name, int16_t x, int16_t cy, int16_t maxW) {
+  setFontForText(tft, name, FONT_BODY);
   if (tft.textWidth(name) <= maxW) { tft.drawString(name, x, cy); return; }
   char buf[28];
   strlcpy(buf, name, sizeof(buf));
@@ -282,8 +287,8 @@ void drawDryingBand(const BambuState& s, const PrinterConfig& cfg,
       else       snprintf(timeBuf, sizeof(timeBuf), "%dm", m);
     }
     char humBuf[8];
-    snprintf(humBuf, sizeof(humBuf), "%d%%", u.humidityRaw);
-    const uint16_t humClr = dryHumidityColor(u.humidity);
+    formatAmsHumidity(humBuf, sizeof(humBuf), u);
+    const uint16_t humClr = amsHumidityColor(u.humidityRaw, u.humidity, u.present, u.humidityRawKnown);
 
     if (g.w >= 210) {
       // Wide band: temperature left, remaining/humidity stacked right. Row Y
@@ -521,7 +526,7 @@ void drawBand(const BambuState& s, const PrinterConfig& cfg, uint8_t slotIndex,
         strlcpy(sPrevFootCenter[bandIdx], cbuf, sizeof(sPrevFootCenter[bandIdx]));
         const int16_t fy = g.footCY;
         const int16_t fcx = g.x + g.w / 2;
-        tft.fillRect(g.x, fy - 8, g.w, 16, CLR_BG);
+        tft.fillRect(g.x, fy - LY_SC(8), g.w, LY_SC(16), CLR_BG);
         setFont(tft, FONT_SMALL);
 
         // Left edge the filament name clamps to: the centre readout when shown,
@@ -530,7 +535,7 @@ void drawBand(const BambuState& s, const PrinterConfig& cfg, uint8_t slotIndex,
         if (hideReadout) {
           if (s.doorSensorPresent) {
             const int16_t lbl = gaugeLabels.door[0] ? tft.textWidth(gaugeLabels.door) : 0;
-            centerLeft = g.x + g.w - g.margin - 18 - lbl;  // door label + icon
+            centerLeft = g.x + g.w - g.margin - LY_ICON16 - LY_SC(2) - lbl;  // door label + icon
           } else {
             centerLeft = g.x + g.w - g.margin;             // band right edge
           }
@@ -558,8 +563,8 @@ void drawBand(const BambuState& s, const PrinterConfig& cfg, uint8_t slotIndex,
           uint16_t clr = s.doorOpen ? dispSettings.doorOpenColor : dispSettings.doorClosedColor;
           tft.setTextDatum(MR_DATUM);
           tft.setTextColor(clr, CLR_BG);
-          if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, g.x + g.w - g.margin - 18, fy);
-          drawIcon16(tft, g.x + g.w - g.margin - 16, fy - 8,
+          if (gaugeLabels.door[0]) tft.drawString(gaugeLabels.door, g.x + g.w - g.margin - LY_ICON16 - LY_SC(2), fy);
+          drawIcon16(tft, g.x + g.w - g.margin - LY_ICON16, fy - LY_ICON16 / 2,
                      s.doorOpen ? icon_unlock : icon_lock, clr);
         }
       }
@@ -633,10 +638,10 @@ void drawSplit() {
     ga.cols[0] = LY_SPLIT_L_COL1;         ga.cols[1] = LY_SPLIT_L_COL2;
     gb.cols[0] = gb.x + LY_SPLIT_L_COL1;  gb.cols[1] = gb.x + LY_SPLIT_L_COL2;
     ga.cols[2] = gb.cols[2] = 0;          // unused (ncols == 2)
-    ga.footCY = gb.footCY = H - 12;
+    ga.footCY = gb.footCY = H - LY_SC(12);
     // Gauges sit just below the name; the freed space below them holds a larger
     // dedicated ETA line above the foot.
-    ga.etaCY = gb.etaCY = (H - 12) - 28;
+    ga.etaCY = gb.etaCY = ga.footCY - LY_SC(28);
 #if defined(DISPLAY_320x480)
     ga.etaFont = gb.etaFont = FONT_LARGE;
 #else

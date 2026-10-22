@@ -24,6 +24,7 @@
 // Resolve/validate the generic DIY display flags (no-op unless BOARD_IS_DIY).
 // Included here, after BACKLIGHT_PIN, so isDiyReservedPin() can reference it.
 #include "diy_display_config.h"
+#include "ws_p4_7b_config.h"
 #define BACKLIGHT_CH    0
 #define BACKLIGHT_FREQ  5000
 #define BACKLIGHT_RES   8
@@ -157,7 +158,7 @@
 // ws_lcd_28c also qualifies on paper (8 MB PSRAM + touch) but is deliberately
 // left out of v1 - the board is untested hardware, and a 2nd TLS socket plus
 // two 200 KB JPEG buffers is not something to debug remotely.
-#if defined(BOARD_IS_JC3248W535) || defined(BOARD_IS_WS350)
+#if defined(BOARD_IS_JC3248W535) || defined(BOARD_IS_WS350) || defined(BOARD_IS_WS_P4_7B)
 #define BOARD_HAS_CAMERA      1
 #else
 #define BOARD_HAS_CAMERA      0
@@ -280,12 +281,12 @@
 // through an off-screen sprite. The 240x320 profile (both orientations) and the
 // 240x240 profile; links two extra VLW blobs (inter_card_num / inter_card_lbl).
 // 240x320 boards without PSRAM (CYD family) render it in 20 px internal-RAM bands.
-#if (defined(DISPLAY_240x320) || defined(DISPLAY_320x480)) && defined(BOARD_HAS_PSRAM)
+#if (defined(DISPLAY_240x320) || defined(DISPLAY_320x480) || defined(DISPLAY_1024x600)) && defined(BOARD_HAS_PSRAM)
 #define HAS_CARD_SKIN  1
 #elif defined(DISPLAY_240x320) && !defined(BOARD_IS_C3)
 #define HAS_CARD_SKIN  1   // band path (CARD_BAND_RENDER); not on a C3 (DIY), too little RAM
 #elif !defined(DISPLAY_240x320) && !defined(DISPLAY_320x480) && !defined(DISPLAY_480x480) && \
-      !defined(DISPLAY_ROUND_240) && !defined(DISPLAY_ROUND_480) && defined(BOARD_HAS_PSRAM)
+      !defined(DISPLAY_ROUND_240) && !defined(DISPLAY_ROUND_480) && !defined(DISPLAY_1024x600) && defined(BOARD_HAS_PSRAM)
 #define HAS_CARD_SKIN  1   // 240x240 square, PSRAM boards only (full-frame sprite)
 #else
 #define HAS_CARD_SKIN  0
@@ -356,7 +357,7 @@
     defined(BOARD_IS_JC3248W535) || defined(BOARD_IS_SC01PLUS) || \
     defined(BOARD_IS_ES3N28P) || defined(BOARD_IS_SC05X) || \
     defined(BOARD_IS_SENSECAP) || defined(BOARD_IS_AMOLED216) || \
-    defined(BOARD_IS_WS28C)
+    defined(BOARD_IS_WS28C) || defined(BOARD_IS_WS_P4_7B)
 #define HAS_FULL_HMS_TABLE  1
 #else
 #define HAS_FULL_HMS_TABLE  0
@@ -439,8 +440,8 @@
 #define BUTTON_DEFAULT_PIN    0       // DIY: no button assumed; user configures in web UI
 #elif defined(DISPLAY_240x320)
 #define BUTTON_DEFAULT_PIN    0       // CYD: GPIO4 is RGB LED, not usable
-#elif defined(BOARD_IS_WS28C)
-#define BUTTON_DEFAULT_PIN    0       // 2.8C: touch is the input; GPIO4 is the battery ADC
+#elif defined(BOARD_IS_WS28C) || defined(BOARD_IS_WS_P4_7B)
+#define BUTTON_DEFAULT_PIN    0       // Touch is the default input; no external button assumed
 #elif defined(BOARD_IS_SENSECAP)
 #define BUTTON_DEFAULT_PIN    38      // SenseCAP Indicator: GPIO38 (inverted, normally HIGH)
 #else
@@ -491,7 +492,9 @@
 // =============================================================================
 //  Buzzer (optional passive buzzer)
 // =============================================================================
-#if defined(BOARD_IS_DIY)
+#if defined(BOARD_IS_WS_P4_7B)
+#define BUZZER_DEFAULT_PIN    0       // ES8311 audio; never drive an arbitrary GPIO
+#elif defined(BOARD_IS_DIY)
 // DIY: no buzzer assumed - the generic C3 default (GPIO3) is often the display's
 // MOSI, and the S3 default (GPIO5) a common SCLK. Disable; user picks a free pin.
 #define BUZZER_DEFAULT_PIN    0

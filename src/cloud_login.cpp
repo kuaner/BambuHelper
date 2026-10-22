@@ -6,10 +6,9 @@
 #include "settings.h"
 
 #include <WiFiClientSecure.h>
+#include "cloud_tls.h"
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
-
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 
 // ---------------------------------------------------------------------------
 //  Session state
@@ -157,7 +156,7 @@ static bool cloudRequest(const char* host, const char* path, const char* method,
   // tight - a healthy call here finishes in a second or two.
   tls->setTimeout(5);
   tls->setHandshakeTimeout(6);
-  tls->setCACertBundle(rootca_crt_bundle_start);
+  configureCloudTrust(*tls);
 
   esp_task_wdt_reset();
   bool connected = tls->connect(host, 443);

@@ -43,4 +43,15 @@ void touchInit();
 // {Unavailable,false}; the edge-managed backend returns {Pressed|Released|None,...}.
 TouchPoll touchPoll();
 
+#if defined(USE_GT911)
+struct TouchDiagnostics {
+  bool ready;
+  bool down;
+  uint32_t frames;
+  uint32_t presses;
+  uint32_t readErrors;
+};
+TouchDiagnostics touchDiagnostics();
+#endif
+
 #endif  // BUTTON_TOUCH_BACKEND_H

@@ -30,6 +30,7 @@ enum FontID : uint8_t {
     // Card temperature grid, DISPLAY_240x320 boards with HAS_CARD_SKIN only.
     // Elsewhere it falls back to FONT_LARGE.
     FONT_CARD_MID = 15,  // Inter Bold 32 px, digits + " -.:"
+    FONT_CJK = 16,      // P4: Chinese printer/task names, 24px built-in face
 };
 
 // Sets the active font. Caches the last selection - calling setFont() repeatedly
@@ -41,6 +42,18 @@ enum FontID : uint8_t {
 // which would otherwise mangle this declaration when both headers are
 // included in the same translation unit.
 void setFont(lgfx::LovyanGFX& gfx, FontID id);
+
+inline bool needsCjkFont(const char* text) {
+#if defined(DISPLAY_1024x600)
+    for (const unsigned char* p = (const unsigned char*)text; *p; ++p)
+        if (*p >= 0xE0 && *p <= 0xEF) return true;
+#endif
+    return false;
+}
+
+inline void setFontForText(lgfx::LovyanGFX& gfx, const char* text, FontID fallback) {
+    setFont(gfx, needsCjkFont(text) ? FONT_CJK : fallback);
+}
 
 // Load a VLW font into an arbitrary render target (e.g. an LGFX_Sprite),
 // bypassing setFont()'s last-selection cache — that cache tracks the main

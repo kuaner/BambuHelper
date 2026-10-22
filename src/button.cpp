@@ -168,6 +168,9 @@ void sanitizeButtonPin() {
   if (buttonPin == GT911_SCL) { clash("GT911 touch SCL"); return; }
   if (buttonPin == GT911_INT) { clash("GT911 touch INT"); return; }
 #endif
+#if defined(BOARD_IS_WS_P4_7B)
+  if (isP4SevenBReservedPin(buttonPin)) { clash("LCD-7B reserved peripheral"); return; }
+#endif
 #if defined(BOARD_IS_WS28C)
   {
     // ST7701 RGB bus + the octal-PSRAM/USB pins. LCD reset, LCD CS, touch

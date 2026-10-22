@@ -118,12 +118,12 @@ void drawClockWidget(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radiu
                      int16_t thickness, bool forceRedraw);
 
 // Color AMS humidity from raw RH when available, with legacy level fallback.
-uint16_t amsHumidityColor(uint8_t humidityRaw, uint8_t humidityLevel, bool present);
+uint16_t amsHumidityColor(uint8_t humidityRaw, uint8_t humidityLevel, bool present, bool rawKnown = false);
 
 // Draw AMS humidity gauge (humidityRaw % with color from raw RH/legacy level)
 void drawHumidityGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
                        uint8_t humidityRaw, uint8_t humidityLevel, bool present,
-                       const char* label, bool forceRedraw);
+                       const char* label, bool forceRedraw, bool rawKnown = false);
 
 // Draw layer progress gauge (current / total layers)
 void drawLayerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,

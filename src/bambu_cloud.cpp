@@ -2,14 +2,14 @@
 #include "settings.h"
 #include "config.h"
 
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "cloud_tls.h"
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <mbedtls/base64.h>
-
-// CA certificate bundle (shared with MQTT — linked from platformio build)
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+#include <time.h>
 
 // ---------------------------------------------------------------------------
 //  Region-aware URL helpers
@@ -104,7 +104,7 @@ static int httpsRequest(const char* method, const char* url,
                                   // single-threaded web server down with it
 
   // First attempt: proper CA verification
-  tls->setCACertBundle(rootca_crt_bundle_start);
+  configureCloudTrust(*tls);
   int httpCode = httpsRequestWith(*tls, method, url, body, authToken, response, cookie);
 
   if (httpCode == -1) {
@@ -251,7 +251,7 @@ bool cloudFetchPlateThumbUrl(const char* token, CloudRegion region, const char* 
   WiFiClientSecure tls;
   tls.setTimeout(10);
   tls.setHandshakeTimeout(10);
-  tls.setCACertBundle(rootca_crt_bundle_start);     // fail closed: no insecure retry with a Bearer
+  configureCloudTrust(tls);     // fail closed: no insecure retry with a Bearer
   HTTPClient http;
   if (!http.begin(tls, api)) return false;
   http.setTimeout(10000);
@@ -294,7 +294,7 @@ bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len) {
   WiFiClientSecure tls;
   tls.setTimeout(10);
   tls.setHandshakeTimeout(10);
-  tls.setCACertBundle(rootca_crt_bundle_start);
+  configureCloudTrust(tls);
   HTTPClient http;
   if (!http.begin(tls, url)) return false;
   http.setTimeout(10000);
@@ -335,4 +335,52 @@ bool cloudFetchDeviceList(const char* token, CloudRegion region, String& respons
   Serial.printf("CLOUD: device list HTTP %d, len=%d\n", httpCode, response.length());
   return httpCode == 200;
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+void cloudDiagnostics(CloudRegion region, String& response) {
+  JsonDocument out;
+  const time_t now = time(nullptr);
+  out["utc_epoch"] = (int64_t)now;
+  out["time_valid"] = now >= NTP_SYNCED_EPOCH;
+  out["timezone"] = getenv("TZ") ? getenv("TZ") : "";
+  out["region"] = region == REGION_CN ? "cn" : "us";
+  char token[1200] = {};
+  const bool present = loadCloudToken(token, sizeof(token));
+  const size_t tokenLen = strlen(token);
+  out["has_token"] = present;
+  out["token_bytes"] = tokenLen;
+  out["bearer_prefix"] = strncmp(token, "Bearer ", 7) == 0;
+  out["quoted"] = token[0] == '"' || token[0] == '\'';
+  unsigned dots = 0;
+  for (size_t i = 0; i < tokenLen; ++i) if (token[i] == '.') ++dots;
+  out["token_dots"] = dots;
+  char uid[48] = {};
+  out["jwt_uid_present"] = tokenLen > 0 && cloudExtractUserId(token, uid, sizeof(uid));
+
+  JsonArray probes = out["probes"].to<JsonArray>();
+  if (present && tokenLen > 0) {
+    const String api = getBambuApiBase(region);
+    const String site = getBambuSiteBase(region);
+    const String urls[] = {
+      api + "/v1/user-service/my/profile",
+      api + "/v1/design-user-service/my/preference",
+      api + "/v1/iot-service/api/user/bind",
+      site + "/api/v1/iot-service/api/user/bind"
+    };
+    for (const String& url : urls) {
+      String body;
+      int status = httpsRequest("GET", url.c_str(), nullptr, token, body);
+      JsonObject probe = probes.add<JsonObject>();
+      probe["url"] = url;
+      probe["http"] = status;
+      probe["bytes"] = body.length();
+      JsonDocument parsed;
+      probe["json"] = !deserializeJson(parsed, body);
+      probe["has_uid"] = !parsed["uid"].isNull() || !parsed["uidStr"].isNull();
+      probe["has_devices"] = parsed["devices"].is<JsonArray>();
+    }
+  }
+  serializeJson(out, response);
+}
+#endif
 

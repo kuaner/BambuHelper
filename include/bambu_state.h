@@ -2,6 +2,7 @@
 #define BAMBU_STATE_H
 
 #include <Arduino.h>
+#include <cstdio>
 #include "config.h"
 
 enum ConnMode : uint8_t { CONN_LOCAL = 0, CONN_CLOUD = 1, CONN_CLOUD_ALL = 2 };
@@ -51,11 +52,22 @@ struct AmsUnit {
   uint8_t  id;                    // raw id from MQTT (0-3 for AMS2, 128 for AMS HT)
   uint8_t  humidity;              // 0-5 scale; direction can vary by AMS model/firmware
   uint8_t  humidityRaw;           // raw RH percent when reported; preferred for display color
+  bool     humidityRawKnown;      // 0% is valid; distinguish it from a missing field
   float    temp;                  // current temperature inside AMS
   uint16_t dryRemainMin;          // minutes remaining, 0 = not drying
   uint16_t dryTotalMin;           // captured at drying start (for progress calc)
   uint8_t  trayCount;             // actual trays parsed (4 for AMS2, 1 for AMS HT)
 };
+
+inline bool hasAmsHumidityPercent(const AmsUnit& unit) {
+  return unit.humidityRawKnown || unit.humidityRaw > 0;
+}
+
+inline void formatAmsHumidity(char* out, size_t size, const AmsUnit& unit, const char* prefix = "") {
+  if (unit.present && hasAmsHumidityPercent(unit)) snprintf(out, size, "%s%u%%", prefix, unit.humidityRaw);
+  else if (unit.present && unit.humidity > 0) snprintf(out, size, "%sL%u", prefix, unit.humidity);
+  else snprintf(out, size, "%s--", prefix);
+}
 
 struct AmsState {
   bool     present;               // any AMS data received

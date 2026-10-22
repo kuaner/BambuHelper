@@ -24,7 +24,8 @@ enum ScreenState {
   SCREEN_CAMERA,        // fullscreen P1/A1 chamber image (#120); tap to exit
   SCREEN_POWER_CONFIRM, // fullscreen plug on/off confirmation (#136); hold to confirm
   SCREEN_DRY_PEEK,      // AMS drying view tapped up during a print (#150); auto-closes
-  SCREEN_HMS            // printer error detail; tap to open while one is active
+  SCREEN_HMS,           // printer error detail; tap to open while one is active
+  SCREEN_AMS            // P4: full AMS overview, available from either display style
 };
 
 // How long a tapped-up error screen stays before it drops back on its own.
@@ -113,6 +114,9 @@ extern lgfx::Panel_AXS15231B_AGFX* g_axs_panel;
 
 void initDisplay();
 void updateDisplay();
+#if defined(BOARD_IS_WS_P4_7B)
+bool toggleAmsPage();
+#endif
 
 // One-shot screenshot of the current screen (PSRAM boards). Begin renders it
 // into a PSRAM sprite (byte-swapped RGB565, w x h); End frees it and repaints.

@@ -46,6 +46,22 @@ import sys
 
 # Canonical board configurations. board_id must match BOARD_VARIANT used by OTA.
 BOARDS = {
+    'ws_p4_lcd_7b': {
+        'build_dir': '.pio/build/ws_p4_lcd_7b',
+        'bootloader_offset': 0x2000,  # ESP32-P4 ROM bootloader address
+        'partitions_offset': 0x8000,
+        'firmware_offset': 0x10000,
+        'build_env': 'ws_p4_lcd_7b',
+        'board_id': 'ws_p4_lcd_7b',
+    },
+    'ws_p4_lcd_7b_rev1': {
+        'build_dir': '.pio/build/ws_p4_lcd_7b_rev1',
+        'bootloader_offset': 0x2000,
+        'partitions_offset': 0x8000,
+        'firmware_offset': 0x10000,
+        'build_env': 'ws_p4_lcd_7b_rev1',
+        'board_id': 'ws_p4_lcd_7b_rev1',
+    },
     'esp32s3': {
         'build_dir': '.pio/build/esp32s3',
         'bootloader_offset': 0x0,       # ESP32-S3 starts at 0x0
@@ -193,6 +209,9 @@ BOARDS = {
 }
 
 BOARD_ALIASES = {
+    'ws_p4_lcd_7b': 'ws_p4_lcd_7b',
+    'ws_p4_lcd_7b_rev1': 'ws_p4_lcd_7b_rev1',
+    'p4': 'ws_p4_lcd_7b',
     's3': 'esp32s3',
     'esp32s3': 'esp32s3',
     's3round': 'esp32s3_round',

@@ -111,11 +111,15 @@ static int16_t g_marqueeOff = 0;              // job-name scroll offset (px), se
 
 
 static const CardGeo& geo() {
+#if defined(DISPLAY_1024x600)
+  return CARD_GEO_P4;
+#else
   const int32_t w = tft.width(), h = tft.height();
   if (w == h) return CARD_GEO_SQ;
   if (w >= 480) return CARD_GEO_LAND_L;
   if (h >= 480) return CARD_GEO_PORT_L;
   return (w > h) ? CARD_GEO_LAND : CARD_GEO_PORT;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +186,9 @@ struct Cv {
   int16_t S(int16_t v) const { return (int16_t)((v * k + 50) / 100); }
   // The scene names the 1x faces; the 1.5x tier swaps in its own.
   FontID tier(FontID id) const {
+#if defined(DISPLAY_1024x600)
+    return id == FONT_CARD_LBL ? FONT_SMALL : id;
+#endif
     if (k <= 100) return id;
     switch (id) {
       case FONT_CARD_NUM: return FONT_CARD_NUM_L;
@@ -194,13 +201,21 @@ struct Cv {
   void useFont(FontID id) {
     if (!noTier) id = tier(id);
     if (id == font) return;
-    if (const lgfx::IFont* cf = cachedFont(id)) g->setFont(cf);
+    if (id == FONT_CJK) {
+#if defined(DISPLAY_1024x600)
+      g->setFont(&lgfx::fonts::efontCN_24);
+#endif
+    } else if (const lgfx::IFont* cf = cachedFont(id)) g->setFont(cf);
     else { g->unloadFont(); g->setTextFont(id == FONT_CARD_LBL ? 1 : 2); }
+#if defined(DISPLAY_1024x600)
+    g->setTextSize(id == FONT_CARD_NUM ? 2 : 1);
+#endif
     font = id;
   }
   int16_t width(const char* s) { return (int16_t)g->textWidth(s); }
   void text(const char* s, int16_t x, int16_t y, FontID f, uint16_t c,
             lgfx::textdatum_t d) {
+    if (needsCjkFont(s)) f = FONT_CJK;
     // Band render: skip text that cannot reach this band, before any font load.
     static uint8_t fontH[16];               // face height per FontID, learned on first load
     const FontID t = noTier ? f : tier(f);
@@ -223,6 +238,7 @@ struct Cv {
 
 // Copy into dst, cutting with ".." until it fits maxW in the current font.
 static void fitText(Cv& cv, char* dst, size_t n, const char* src, int16_t maxW) {
+  if (needsCjkFont(src)) cv.useFont(FONT_CJK);
   strlcpy(dst, src, n);
   if (cv.width(dst) <= maxW) return;
   size_t len = strlen(dst);
@@ -415,7 +431,7 @@ static void snapBottom(CardFrame& f, const BambuState& s, const char* serial, ui
     const AmsUnit& au = s.ams.units[u];
     if (au.temp > 0.5f)
       addCell(f, "AMS", "AMS", au.temp, CU_DEG, tempClr(au.temp, dispSettings.chamberScaleMax, dispSettings.textColor));
-    if (au.humidityRaw > 0)    addCell(f, "HUMIDITY", "HUM", au.humidityRaw, CU_PCT, dispSettings.textColor);
+    if (hasAmsHumidityPercent(au))    addCell(f, "HUMIDITY", "HUM", au.humidityRaw, CU_PCT, dispSettings.textColor);
     else if (au.humidity > 0)  addCell(f, "HUMIDITY", "HUM", au.humidity, CU_OF5, dispSettings.textColor);
   }
 }
@@ -434,8 +450,14 @@ static void snapAmsColumn(CardFrame& f, const BambuState& s, uint8_t slot) {
     const AmsUnit& au = a.units[u];
     if (au.id >= 128) snprintf(f.amsLabel, sizeof(f.amsLabel), "AMS HT");
     else formatAmsNumberLabel(f.amsLabel, sizeof(f.amsLabel), (uint8_t)u);
-    if (au.humidityRaw > 0)   snprintf(f.amsHum, sizeof(f.amsHum), "%u%%", au.humidityRaw);
-    else if (au.humidity > 0) snprintf(f.amsHum, sizeof(f.amsHum), "%u/5", au.humidity);
+    if (hasAmsHumidityPercent(au))   snprintf(f.amsHum, sizeof(f.amsHum), "%u%%", au.humidityRaw);
+    else if (au.humidity > 0) snprintf(f.amsHum, sizeof(f.amsHum),
+#if defined(DISPLAY_1024x600)
+                                     "RH L%u",
+#else
+                                     "%u/5",
+#endif
+                                     au.humidity);
   }
   if (own) {
     const AmsUnit& au = a.units[u];
@@ -478,6 +500,9 @@ static void copyRenderable(char* dst, size_t n, const char* src) {
     if (k < len) { p += k; continue; }       // truncated sequence
     bool ok = (cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp < 0x180) ||
               (cp >= 0x218 && cp <= 0x21B) || cp == 0x20AC;
+#if defined(DISPLAY_1024x600)
+    ok = ok || (cp >= 0x3000 && cp <= 0x9FFF);
+#endif
     if (ok) {
       if (o + len >= n) break;
       memcpy(dst + o, p, len);
@@ -580,18 +605,18 @@ static void drawHeader(Cv& cv, const CardFrame& f, const CardGeo& g) {
   }
   // Door: closed lock / open lock, in the door colours
   if (f.doorShow) {
-    cv.icon(limit - 16, g.hdrCy - 8, f.doorOpen ? icon_unlock : icon_lock, f.doorClr);
-    limit -= 16 + 6;
+    cv.icon(limit - LY_ICON16, g.hdrCy - LY_ICON16 / 2, f.doorOpen ? icon_unlock : icon_lock, f.doorClr);
+    limit -= LY_ICON16 + cv.S(6);
   }
   // Plug power while printing
   if (f.watts[0]) {
     cv.text(f.watts, limit, g.hdrCy, FONT_BODY, f.dim, lgfx::textdatum_t::middle_right);
     cv.useFont(FONT_BODY);
-    int16_t ix = limit - cv.width(f.watts) - 15;
+    int16_t ix = limit - cv.width(f.watts) - LY_ICON16 + 1;
     // Yellow vanishes on a light background; take the amber there.
     const uint16_t bg = f.bg;
     const bool lightBg = (((bg >> 11) & 0x1F) * 2 + ((bg >> 5) & 0x3F) + (bg & 0x1F) * 2) > 120;
-    cv.icon(ix, g.hdrCy - 8, icon_lightning, lightBg ? 0xC400 : CLR_YELLOW);
+    cv.icon(ix, g.hdrCy - LY_ICON16 / 2, icon_lightning, lightBg ? 0xC400 : CLR_YELLOW);
     limit = ix - 6;
   }
   // Multi-printer dots, centred (or left of whatever sits on the right). The
@@ -855,7 +880,13 @@ static void drawBottom(Cv& cv, const CardFrame& f, const CardGeo& g, int16_t rul
     const char* lbl = shortLbl ? c.lblShort : c.lbl;
     cv.text(lbl, x, top + g.cellLblOff, FONT_CARD_LBL, f.dim, lgfx::textdatum_t::top_left);
     char v[8];
-    snprintf(v, sizeof(v), "%d", c.val);
+    snprintf(v, sizeof(v),
+#if defined(DISPLAY_1024x600)
+             c.unit == CU_OF5 ? "L%d" : "%d",
+#else
+             "%d",
+#endif
+             c.val);
     uint16_t vc = c.accent ? f.nozAccent : c.vclr;
     const FontID vf = g.valBig ? FONT_CARD_MID : FONT_LARGE;
     const FontID uf = g.valBig ? FONT_LARGE : FONT_BODY;
@@ -867,7 +898,9 @@ static void drawBottom(Cv& cv, const CardFrame& f, const CardGeo& g, int16_t rul
     } else if (c.unit == CU_PCT) {
       cv.text("%", vx, base, uf, f.dim, lgfx::textdatum_t::baseline_left);
     } else {
+#if !defined(DISPLAY_1024x600)
       cv.text("/5", vx, base, uf, f.dim, lgfx::textdatum_t::baseline_left);
+#endif
     }
   }
 }
@@ -949,7 +982,9 @@ static CardGeo frameGeo(const CardFrame& f) {
     rows = (f.cellCount + cols - 1) / cols;
   }
   const int16_t span = (rows - 1) * g0.cellRowH + g0.cellBaseOff + (f.amsInBand ? 3 : 0);
-  const int16_t r1 = g0.H - 1 - span, dBot = r1 - r0;
+  // Keep the bottom baseline inside the padded canvas. P4 uses a real 24px
+  // inset; forcing its baseline to H-1 made drawBottom reject every cell.
+  const int16_t r1 = cardBottomBaseline(g0) - span, dBot = r1 - r0;
   const int16_t a0 = g0.hdrRule, a1 = g.hdrRule;
   auto map = [&](int16_t& y) {
     if (y == 0 || r0 <= a0) return;          // 0 = field unused by this table
@@ -1421,8 +1456,14 @@ static void fillTile(CardAmsTile& t, const AmsTray& src, bool active, const char
 
 static void unitEnv(char* out, size_t n, const AmsUnit& u) {
   char h[8] = "";
-  if (u.humidityRaw > 0)    snprintf(h, sizeof(h), "%u%%", u.humidityRaw);
-  else if (u.humidity > 0)  snprintf(h, sizeof(h), "%u/5", u.humidity);
+  if (hasAmsHumidityPercent(u))    snprintf(h, sizeof(h), "%u%%", u.humidityRaw);
+  else if (u.humidity > 0)  snprintf(h, sizeof(h),
+#if defined(DISPLAY_1024x600)
+                                    "RH L%u",
+#else
+                                    "%u/5",
+#endif
+                                    u.humidity);
   const int t = (int)lroundf(u.temp);
   if (u.temp > 0.5f && h[0]) snprintf(out, n, "%s · %d°", h, t);
   else if (u.temp > 0.5f)    snprintf(out, n, "%d°", t);
@@ -1524,7 +1565,7 @@ static AmsGrid amsGrid(const CardGeo& g) {
 }
 
 // Snapshot the AMS page when this screen should show it now; false = show the status.
-static bool snapAmsPage(CardFrame& f, PrinterSlot& p, bool autoModes) {
+static bool snapAmsPage(CardFrame& f, PrinterSlot& p, bool autoModes, bool standalone = false) {
   CardAmsBox* all = g_mem->all;
   g_amsShown = false;
   const uint8_t n = buildAmsBoxes(p.state.ams, all, 8);
@@ -1536,7 +1577,9 @@ static bool snapAmsPage(CardFrame& f, PrinterSlot& p, bool autoModes) {
   const unsigned long now = millis();
   int16_t page = -1;
   if (g_peek && now - g_peekStart >= AMS_PEEK_MS) g_peek = false;
-  if (g_peek) {
+  if (standalone) {
+    page = (int16_t)((now / AMS_PAGE_MS) % pages);
+  } else if (g_peek) {
     if (g_peekStatus) return false;        // opened over the AMS page: the peek is the status
     page = (int16_t)(((now - g_peekStart) / AMS_PAGE_MS) % pages);
   } else if (autoModes && dispSettings.cardReady == 1) {
@@ -1780,12 +1823,21 @@ bool tickCardMarquee() {
     strip->setPsram(true);
     strip->setColorDepth(16);
   }
-  const int16_t sh = 20;                     // 1x body face on every tier, as the scene
+  const int16_t sh =
+#if defined(DISPLAY_1024x600)
+                     42;                   // P4 body font is 32px, not 16px
+#else
+                     20;
+#endif
   if (strip->width() != hw || strip->height() != sh) {
     strip->deleteSprite();
     if (!strip->createSprite(hw, sh)) return false;
     loadFontInto(*strip, FONT_BODY);         // once: per-tick loads would churn the heap
   }
+#if defined(DISPLAY_1024x600)
+  if (needsCjkFont(g_mem->last.job)) strip->setFont(&lgfx::fonts::efontCN_24);
+  else if (const lgfx::IFont* face = cachedFont(FONT_BODY)) strip->setFont(face);
+#endif
   const int16_t span = (int16_t)strip->textWidth(g_mem->last.job) - hw;
   const unsigned long now = millis();
   if (strcmp(shown, g_mem->last.job) != 0) {      // new job: start over from the left
@@ -1980,6 +2032,13 @@ bool drawCardPrinting(PrinterSlot& p, bool force) {
   if (f.showActiveFil) activeFilament(s, f.activeFil);
   return present(force);
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+bool drawAmsOverview(PrinterSlot& p, bool force) {
+  if (!cardMemReady() || !snapAmsPage(g_mem->cur, p, false, true)) return false;
+  return present(force);
+}
+#endif
 
 bool drawCardFinished(PrinterSlot& p, bool force) {
   if (!cardMemReady()) return false;

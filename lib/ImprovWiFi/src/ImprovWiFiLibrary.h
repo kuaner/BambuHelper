@@ -44,7 +44,7 @@
 class ImprovWiFi
 {
 private:
-  const char *const CHIP_FAMILY_DESC[5] = {"ESP32", "ESP32-C3", "ESP32-S2", "ESP32-S3", "ESP8266"};
+  const char *const CHIP_FAMILY_DESC[6] = {"ESP32", "ESP32-C3", "ESP32-S2", "ESP32-S3", "ESP8266", "ESP32-P4"};
   ImprovTypes::ImprovWiFiParamsStruct improvWiFiParams;
 
   uint8_t _buffer[128];

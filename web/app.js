@@ -2034,3 +2034,10 @@ applyThemeMode(document.documentElement.getAttribute('data-theme') || 'dark');
   refreshTopStatusDots();
   setInterval(refreshTopStatusDots, 5000);
 })();
+
+// P4 offers the complete AMS page in either display style.
+function showDeviceAms(){
+  fetch('/display/ams',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+    if(d.status !== 'ok') alert(d.message || 'AMS page unavailable');
+  }).catch(function(){alert('Device unreachable');});
+}

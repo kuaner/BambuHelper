@@ -16,6 +16,12 @@ void sanitizeBuzzerPin() {
     buzzerSettings.pin = 0;
     return;
   }
+#if defined(BOARD_IS_WS_P4_7B)
+  if (isP4SevenBReservedPin(buzzerSettings.pin)) {
+    buzzerSettings.pin = 0;
+    return;
+  }
+#endif
 #if defined(BOARD_IS_WS350)
   // ws_lcd_350 has no buzzer hardware and the GPIO backend drives the pin LOW
   // on init/stop even when the buzzer is disabled. The display SPI (SCLK=5,

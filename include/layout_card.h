@@ -44,6 +44,10 @@ struct CardGeo {
   int16_t valBig;            // runtime (frameGeo): band values in FONT_CARD_MID
 };
 
+static constexpr int16_t cardBottomBaseline(const CardGeo& g) {
+  return g.H - (g.pad > 1 ? g.pad : 1);
+}
+
 // 320x240 landscape. Outer pad 1: the edge glow may overlap content (owner OK).
 static const CardGeo CARD_GEO_LAND = {
   320, 240, 1,
@@ -146,6 +150,28 @@ static const CardGeo CARD_GEO_PORT_L = {      // 320x480
   204, 231, 240, 282, 297, 0,
   0,
   150, 19,
+  0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0,
+  0,
+};
+
+// Native seven-inch landscape. Coordinates and fixed-size scale match the
+// 2x P4 font tier; the same renderer retains AMS, thumbnails and idle pages.
+static const CardGeo CARD_GEO_P4 = {
+  1024, 600, 24,
+  36, 72, 30, 14,
+  110, 160, 282, 304, 12, 354,
+  220, 96, 130, 52,
+  0, 0, 0,
+  0, 0,
+  420, 420, 0, 120,
+  140, 190, 250, 300, 350, 390, 420,
+  142, 200, 190, 1, 260, 36, 1, 420,
+  16, 92,
+  220, 0,
+  0, 0, 0, 0, 0, 0,
+  0,
+  200, 32,
   0, 0, 0, 0, 0,
   0, 0, 0, 0, 0,
   0,

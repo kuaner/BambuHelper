@@ -49,4 +49,8 @@ inline bool tickCardColon() { return false; }
 inline bool cardFrameView(const uint16_t**, int16_t*, int16_t*) { return false; }
 #endif
 
+#if defined(BOARD_IS_WS_P4_7B)
+bool drawAmsOverview(PrinterSlot& p, bool force);
+#endif
+
 #endif // DISPLAY_CARD_H

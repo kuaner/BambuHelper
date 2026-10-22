@@ -1,4 +1,4 @@
-// GT911 capacitive touch backend (ws_lcd_28c). See button_touch_backend.h.
+// GT911 capacitive touch backend (ws_lcd_28c / ws_p4_lcd_7b). See button_touch_backend.h.
 // Differences vs CST328:
 //   - I2C address is latched at reset from the INT level: low = 0x5D, high = 0x14
 //   - status register 0x814E: bit7 = data ready, low nibble = point count
@@ -34,6 +34,7 @@ static bool    seen     = false;
 // hold-to-power-on), so the last frame's level stands until the next one.
 static bool     lastDown    = false;
 static uint32_t lastFrameMs = 0;
+static uint32_t frameCount = 0, pressCount = 0, readErrors = 0;
 // A controller that stops publishing while we believe a finger is down would
 // otherwise latch a permanent hold - which the power-confirm ring reads as a
 // deliberate hold and would act on. Nothing legitimately withholds a frame for
@@ -65,10 +66,11 @@ static bool gt911Probe(uint8_t a) {
 }
 
 void touchInit() {
-  // The display bring-up already pulsed reset with INT held low and released
-  // INT as an input. Re-assert the input mode defensively - nothing else should
-  // be driving GPIO16, and a floating INT makes the first read look dead.
+  // ws_lcd_28c latches the address during display reset. LCD-7B leaves
+  // INT/RST unassigned and discovers the controller by polling.
+  #if GT911_INT >= 0
   pinMode(GT911_INT, INPUT);
+  #endif
   lastDown    = false;
   lastFrameMs = 0;
 
@@ -109,7 +111,10 @@ TouchPoll touchPoll() {
   if (!busReady) return {TouchEvent::Unavailable, false};
 
   uint8_t status = 0;
-  if (!gt911Read(GT911_REG_STATUS, &status, 1)) return {TouchEvent::Unavailable, false};
+  if (!gt911Read(GT911_REG_STATUS, &status, 1)) {
+    readErrors++;
+    return {TouchEvent::Unavailable, false};
+  }
   if (!seen) {
     Serial.printf("GT911 touch became responsive at runtime (addr 0x%02X)\n", addr);
     seen = true;
@@ -128,9 +133,16 @@ TouchPoll touchPoll() {
   // Always acknowledge a published frame, whatever the count - skipping this
   // wedges the controller on its current frame and touch dies after one tap.
   gt911Write(GT911_REG_STATUS, 0);
-  lastDown    = (points > 0 && points <= GT911_MAX_POINTS);
+  const bool down = (points > 0 && points <= GT911_MAX_POINTS);
+  frameCount++;
+  if (down && !lastDown) pressCount++;
+  lastDown    = down;
   lastFrameMs = millis();
   return {TouchEvent::None, lastDown};
+}
+
+TouchDiagnostics touchDiagnostics() {
+  return {busReady && seen, lastDown, frameCount, pressCount, readErrors};
 }
 
 #endif  // USE_GT911

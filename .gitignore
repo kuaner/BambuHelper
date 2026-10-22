@@ -4,6 +4,9 @@
 .claude
 codex/
 .cache
+__pycache__/
+# pioarduino creates this Arduino component stub during dependency setup.
+/src/idf_component.yml
 *.o
 *.obj
 *.elf

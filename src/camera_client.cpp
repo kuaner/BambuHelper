@@ -71,7 +71,12 @@ bool cameraDisplayedHasCameraTile() {
   // Extra slots only render in their active layout, so only count them there -
   // a camera placed in an inactive extra grid must not open the socket or grab
   // tap-to-fullscreen when no CAM tile is actually visible.
-  const bool landscape = (dispSettings.rotation == 1 || dispSettings.rotation == 3);
+  const bool landscape =
+#if defined(DISPLAY_1024x600)
+                         true;
+#else
+                         (dispSettings.rotation == 1 || dispSettings.rotation == 3);
+#endif
   if (landscape && dispSettings.landscape8Slots) {
     for (uint8_t i = 0; i < LANDSCAPE_EXTRA_COUNT; i++)
       if (c.landscapeExtras[i] == GAUGE_CAMERA) return true;

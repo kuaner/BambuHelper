@@ -188,7 +188,11 @@ void defaultDisplaySettings(DisplaySettings& ds) {
   ds.cydPanelClassic = false;
   ds.cyd32eVariant = false;
   ds.roundSkin = 0;
+#if defined(DISPLAY_1024x600)
+  ds.cardStyle = 1;  // big screen starts with task name, AMS and temperatures
+#else
   ds.cardStyle = 0;
+#endif
   ds.cardLeft = 0;
   ds.cardBottom = 0;
   ds.cardReady = 0;
@@ -563,7 +567,7 @@ void loadSettings() {
   DisplaySettings def;
   defaultDisplaySettings(def);
 
-  dispSettings.rotation = prefs.getUChar("dsp_rot", def.rotation);
+  dispSettings.rotation = normalizeDisplayRotation(prefs.getUChar("dsp_rot", def.rotation));
   dispSettings.bgColor = prefs.getUShort("dsp_bg", def.bgColor);
   dispSettings.trackColor = prefs.getUShort("dsp_trk", def.trackColor);
   dispSettings.animatedBar = prefs.getBool("dsp_abar", def.animatedBar);

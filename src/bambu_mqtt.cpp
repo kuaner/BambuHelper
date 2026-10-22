@@ -5,17 +5,16 @@
 #include "config.h"
 #include "bambu_cloud.h"
 #include "cloud_login.h"
+#include "ams_telemetry.h"
 #include "hms_lookup.h"    // hmsIsDescribed: undescribed HMS codes never enter state
 
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "cloud_tls.h"
 #include <algorithm>
 #include <esp_task_wdt.h>
-
-// Built-in CA certificate bundle for cloud TLS verification
-extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
 
 class MqttRxClient;
 
@@ -291,7 +290,7 @@ static bool ensureClients(MqttConn& c) {
   }
   if (isCloudMode(printers[c.slotIndex].config.mode)) {
     // Cloud: use built-in CA certificate bundle for proper TLS verification
-    c.tls->setCACertBundle(rootca_crt_bundle_start);
+    configureCloudTrust(*c.tls);
     c.tls->setTimeout(15);
   } else {
     // LAN: printers use self-signed certs, skip verification
@@ -800,64 +799,16 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
           // when snow is absent. Snow (extruder.info[].snow) takes priority in
           // the activeTray block below since it tracks the currently-feeding
           // tray on multi-color prints, while tray_now reports the "loaded" tray.
-          bool hasExplicitTrayNow = amsDoc["tray_now"].is<const char*>();
           uint8_t rawTrayNow = 255;
-          if (hasExplicitTrayNow) rawTrayNow = atoi(amsDoc["tray_now"].as<const char*>());
+          bool hasExplicitTrayNow = readAmsId(amsDoc["tray_now"], rawTrayNow);
 
-          uint8_t unitIdx = 0;
           if (hasUnitsArray) {
             // --- Pass 1: unit-level data (only when the unit list is present) ---
             // Some AMS messages carry tray_now/vt_tray without the nested unit
             // list. Treat those as partial updates; clearing unitCount there
             // makes the landscape AMS column briefly collapse to the 0-AMS layout.
-            s.ams.unitCount = 0;
-            s.ams.anyDrying = false;
-            for (uint8_t i = 0; i < AMS_MAX_UNITS; i++) {
-              AmsUnit& u = s.ams.units[i];
-              uint8_t savedTrayCount = u.trayCount;
-              uint16_t savedDryTotal = u.dryTotalMin;
-              uint16_t savedDryRemain = u.dryRemainMin;
-              u.present = false;
-              u.id = 0;
-              u.humidity = 0;
-              u.humidityRaw = 0;
-              u.temp = 0;
-              u.trayCount = savedTrayCount;
-              u.dryTotalMin = savedDryTotal;
-              u.dryRemainMin = savedDryRemain;
-            }
-
-            for (JsonObject unit : units) {
-              if (!unit["id"].is<const char*>()) continue;
-              uint8_t uid = atoi(unit["id"].as<const char*>());
-              if (unitIdx >= AMS_MAX_UNITS) continue;
-              s.ams.unitCount++;
-
-              AmsUnit& u = s.ams.units[unitIdx];
-              u.present = true;
-              u.id = uid;
-              if (!unit["dry_time"].isNull()) {
-                uint16_t dt = unit["dry_time"].as<uint16_t>();
-                if (dt > 0 && (u.dryRemainMin == 0 || dt > u.dryTotalMin))
-                  u.dryTotalMin = dt;
-                if (dt == 0) u.dryTotalMin = 0;
-                u.dryRemainMin = dt;
-              }
-              if (unit["humidity"].is<const char*>())
-                u.humidity = atoi(unit["humidity"].as<const char*>());
-              if (unit["humidity_raw"].is<const char*>())
-                u.humidityRaw = atoi(unit["humidity_raw"].as<const char*>());
-              if (unit["temp"].is<const char*>())
-                u.temp = atof(unit["temp"].as<const char*>());
-              if (u.dryRemainMin > 0) s.ams.anyDrying = true;
-              unitIdx++;
-            }
-            // Tray-bearing units: derived here rather than in the tray pass so
-            // it is also correct on a partial update that carries the unit list
-            // without any "tray" arrays.
-            s.ams.trayUnitCount = s.ams.unitCount < AMS_TRAY_UNITS
-                                  ? s.ams.unitCount : AMS_TRAY_UNITS;
-            if (unitIdx > 0) s.lastUpdate = millis();  // AMS data = connection alive
+            mergeAmsUnits(s.ams, units, hasTraySnapshot);
+            if (s.ams.unitCount > 0) s.lastUpdate = millis();
           }
 
           // --- Pass 2: tray-level data (only full snapshots) ---
@@ -870,21 +821,18 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
             s.ams.vtType[0] = '\0';
             s.ams.vtColorRgb565 = 0;
 
-            unitIdx = 0;
             for (JsonObject unit : units) {
-              if (!unit["id"].is<const char*>()) continue;
-              // Tray slots only exist for the first AMS_TRAY_UNITS units. The
-              // rest keep their unit-level data from pass 1; a tray of theirs
-              // that is actually feeding is picked up by the overflow capture.
-              if (unitIdx >= AMS_TRAY_UNITS) continue;
-              uint8_t seqIdx = unitIdx;
-              unitIdx++;
+              uint8_t uid;
+              if (!readAmsId(unit["id"], uid)) continue;
+              const int seq = findAmsUnit(s.ams, uid);
+              if (seq < 0 || seq >= AMS_TRAY_UNITS) continue;
+              const uint8_t seqIdx = static_cast<uint8_t>(seq);
 
               JsonArray trays = unit["tray"];
               uint8_t parsedTrays = 0;
               for (JsonObject tray : trays) {
-                if (!tray["id"].is<const char*>()) continue;
-                uint8_t tid = atoi(tray["id"].as<const char*>());
+                uint8_t tid;
+                if (!readAmsId(tray["id"], tid)) continue;
                 if (tid >= AMS_TRAYS_PER_UNIT) continue;
 
                 uint8_t idx = seqIdx * AMS_TRAYS_PER_UNIT + tid;

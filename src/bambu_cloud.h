@@ -20,6 +20,11 @@ bool cloudFetchUserId(const char* token, char* userId, size_t len, CloudRegion r
 // picks the fields it needs; the payload lists every printer bound to it.
 bool cloudFetchDeviceList(const char* token, CloudRegion region, String& response);
 
+#if defined(BOARD_IS_WS_P4_7B)
+// Safe diagnostics: UTC/TZ, token shape/length and HTTP statuses, never secrets.
+void cloudDiagnostics(CloudRegion region, String& response);
+#endif
+
 // Plate thumbnail of a cloud task: GET /v1/iot-service/api/user/task/<id> and
 // copy context.plates[index == plateIdx].thumbnail.url (a presigned S3 URL,
 // valid ~24 h, no auth) into url. CA-verified only. Safe to call from a worker
