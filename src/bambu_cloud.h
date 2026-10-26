@@ -30,10 +30,10 @@ void cloudDiagnostics(CloudRegion region, String& response);
 // valid ~24 h, no auth) into url. CA-verified only. Safe to call from a worker
 // task: every client is local to the call.
 bool cloudFetchPlateThumbUrl(const char* token, CloudRegion region, const char* taskId,
-                             int plateIdx, char* url, size_t urlLen);
+                             int plateIdx, char* url, size_t urlLen, int* httpStatus = nullptr);
 
 // GET an unauthenticated HTTPS URL into buf (no redirects, CA-verified only).
 // Fails when the body is missing a Content-Length or exceeds cap.
-bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len);
+bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len, int* httpStatus = nullptr);
 
 #endif // BAMBU_CLOUD_H

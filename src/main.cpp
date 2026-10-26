@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "display_ui.h"
+#include "display_p4.h"
 #include "thumb_fetch.h"
 #include "settings.h"
 #include "wifi_manager.h"
@@ -22,6 +23,10 @@
 #include <time.h>
 #if defined(BOARD_IS_WS_P4_7B)
 #include <esp32-hal-hosted.h>
+// LovyanGFX VLWfont::drawChar uses alloca(glyphWidth * glyphHeight).
+// A 112px progress digit needs ~6KB before the surrounding render frames;
+// Arduino's default 8KB loop stack overflows on the first live dashboard.
+SET_LOOP_TASK_STACK_SIZE(24 * 1024);
 #endif
 
 static unsigned long splashEnd = 0;
@@ -709,6 +714,9 @@ static void handleWakeButton() {
   // (suppressed) so its 2 s save-debounce keeps draining and no dim session starts,
   // then hand off and return before the normal tap/hold logic.
   if (getScreenState() == SCREEN_POWER_CONFIRM) {
+#if defined(BOARD_IS_WS_P4_7B)
+    handleP4DashboardTouch();
+#endif
     ledHoldDimUpdate(held, holdMs, /*suppressDim=*/true);
     if (touchPress || boardPress) { buzzerPlayClick(); ledOnUserInteraction(); }
     handlePowerConfirmInput(held);
@@ -726,6 +734,9 @@ static void handleWakeButton() {
   // (suppressed) so its 2 s save debounce keeps draining and no dim session
   // starts - a hold in the dark must not ramp the LED and write it to NVS.
   if (isNightBlackout() && !isSleepStickyScreen(getScreenState())) {
+#if defined(BOARD_IS_WS_P4_7B)
+    handleP4DashboardTouch();
+#endif
     ledHoldDimUpdate(held, holdMs, /*suppressDim=*/true);
     if (touchPress || boardPress) {
       buzzerPlayClick();
@@ -736,6 +747,18 @@ static void handleWakeButton() {
     holdConsumedThisPress = false;
     return;
   }
+
+#if defined(BOARD_IS_WS_P4_7B)
+  // Coordinate navigation owns P4 Cards touches. Poll even while inactive so
+  // waking or leaving a modal cannot deliver a release tap to a different view.
+  if (handleP4DashboardTouch() && buttonType == BTN_TOUCHSCREEN && !boardPress) {
+    pcPendingClicks = 0;
+    wasHeldPrev = false;
+    holdConsumedThisPress = false;
+    ledHoldDimUpdate(false, 0, true);
+    return;
+  }
+#endif
 
   // Flush a buffered multi-click once the window closes: 1 click = the tap
   // gesture, 2+ = the double-tap gesture for the frozen target slot.

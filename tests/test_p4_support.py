@@ -46,7 +46,8 @@ class P4SupportTests(unittest.TestCase):
         #include "Arduino.h"
         struct FakeWire {
           uint8_t address = 0, status = 0;
-          bool fail = false;
+          bool fail = false, xyFail = false;
+          uint16_t x = 123, y = 456;
           uint16_t reg = 0;
           std::vector<uint8_t> tx, rx;
           size_t pos = 0;
@@ -64,6 +65,10 @@ class P4SupportTests(unittest.TestCase):
             rx.assign(n, 0); pos = 0;
             if (reg == 0x814E) rx[0] = status;
             if (reg == 0x8140 && n == 4) rx = {'9', '1', '1', 0};
+            if (reg == 0x8150 && n == 4) {
+              if (xyFail) return 0;
+              rx = {uint8_t(x), uint8_t(x >> 8), uint8_t(y), uint8_t(y >> 8)};
+            }
             return n;
           }
           int read() { return rx[pos++]; }
@@ -83,6 +88,9 @@ class P4SupportTests(unittest.TestCase):
           Wire.status = 0x81;
           assert(touchPoll().isDown);
           assert(Wire.status == 0);                  // acknowledged
+#ifdef BOARD_IS_WS_P4_7B
+          assert(touchContact().valid && touchContact().x == 123 && touchContact().y == 456);
+#endif
           nowMs = 100;
           assert(touchPoll().isDown);               // no new frame: held
           assert(touchDiagnostics().presses == 1);
@@ -96,6 +104,21 @@ class P4SupportTests(unittest.TestCase):
           assert(touchPoll().ev == TouchEvent::Unavailable);
           const auto d = touchDiagnostics();
           assert(d.presses == 2 && d.frames == 3 && d.readErrors == 1);
+#ifdef BOARD_IS_WS_P4_7B
+          assert(!touchContact().valid);             // no navigation after I2C failure
+          Wire.fail = false; Wire.status = 0x81;
+          touchPoll(); assert(touchContact().valid);
+          Wire.status = 0x82; touchPoll();
+          assert(!touchContact().valid && Wire.status == 0); // multitouch acknowledged
+          Wire.status = 0x81; Wire.xyFail = true; touchPoll();
+          assert(!touchContact().valid && Wire.status == 0); // coordinate read failed
+          Wire.xyFail = false; Wire.x = 1024; Wire.status = 0x81; touchPoll();
+          assert(!touchContact().valid);             // invalid edge coordinate
+          Wire.x = 1023; Wire.y = 599; Wire.status = 0x81; touchPoll();
+          assert(touchContact().valid);
+          nowMs += 1001; touchPoll();
+          assert(!touchContact().down && !touchContact().valid); // stale hold cancels
+#endif
         }
         '''
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,11 +127,12 @@ class P4SupportTests(unittest.TestCase):
             (folder / "Wire.h").write_text(wire)
             (folder / "probe.cpp").write_text(probe)
             exe = folder / "probe"
-            subprocess.run(["c++", "-std=c++11", "-DUSE_GT911=1", "-DGT911_SDA=7",
-                            "-DGT911_SCL=8", "-DGT911_INT=-1", "-I", tmp,
-                            "-I", str(ROOT / "src"), str(folder / "probe.cpp"),
-                            str(ROOT / "src/button_touch_gt911.cpp"), "-o", str(exe)], check=True)
-            subprocess.run([str(exe)], check=True)
+            for extra in ([], ["-DBOARD_IS_WS_P4_7B=1"]):
+                subprocess.run(["c++", "-std=c++11", "-DUSE_GT911=1", "-DGT911_SDA=7",
+                                "-DGT911_SCL=8", "-DGT911_INT=-1", *extra, "-I", tmp,
+                                "-I", str(ROOT / "src"), str(folder / "probe.cpp"),
+                                str(ROOT / "src/button_touch_gt911.cpp"), "-o", str(exe)], check=True)
+                subprocess.run([str(exe)], check=True)
 
     def test_partition_bounds_and_ota_slots(self):
         with (ROOT / "partitions_32mb.csv").open() as src:

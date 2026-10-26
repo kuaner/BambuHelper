@@ -2,6 +2,18 @@
 #include <new>
 #include "config.h"   // HAS_CARD_SKIN
 
+#if defined(BOARD_IS_WS_P4_7B)
+#if defined(P4_PREVIEW)
+#include "p4_sans_preview.h"
+#else
+extern const uint8_t p4SansData[] asm("_binary_assets_p4_p4_sans_24_vlw_start");
+extern const uint8_t p4SansSmallData[] asm("_binary_assets_p4_p4_sans_20_vlw_start");
+#endif
+#include "fonts/inter_p4_progress.h"
+#include "fonts/inter_p4_value.h"
+#include "fonts/p4_duration.h"
+#endif
+
 // VLW font tables are huge PROGMEM blobs. Including them in a header would
 // give every translation unit its own copy (each `const uint8_t name[]` at
 // namespace scope has internal linkage). Defining them once in a .cpp keeps
@@ -128,7 +140,12 @@ void setFont(lgfx::LovyanGFX& gfx, FontID id) {
             if (!loadFontInto(gfx, id)) applyBitmapFallback(gfx, FONT_LARGE);
             break;
         case FONT_CJK:
-#if defined(DISPLAY_1024x600)
+#if defined(BOARD_IS_WS_P4_7B)
+            if (!gfx.loadFont(p4SansData)) {
+                gfx.unloadFont();
+                gfx.setFont(&lgfx::fonts::efontCN_24);
+            }
+#elif defined(DISPLAY_1024x600)
             gfx.unloadFont();
             gfx.setFont(&lgfx::fonts::efontCN_24);
 #endif
@@ -148,6 +165,13 @@ void setFont(lgfx::LovyanGFX& gfx, FontID id) {
 
 static const uint8_t* fontData(FontID id) {
     switch (id) {
+#if defined(BOARD_IS_WS_P4_7B)
+        case FONT_CJK: return p4SansData;
+        case FONT_P4_CN_SMALL: return p4SansSmallData;
+        case FONT_P4_PROGRESS: return inter_p4_progress;
+        case FONT_P4_VALUE: return inter_p4_value;
+        case FONT_P4_DURATION: return p4_duration;
+#endif
         case FONT_SMALL:  return inter_10;
         case FONT_BODY:   return inter_14;
         case FONT_LARGE:  return inter_19;
@@ -198,11 +222,12 @@ bool loadFontInto(lgfx::LovyanGFX& gfx, FontID id) {
     return data && gfx.loadFont(data);
 }
 
-static lgfx::PointerWrapper* cacheSrc[16];
-static lgfx::VLWfont*        cacheFont[16];
+static constexpr uint8_t FONT_CACHE_COUNT = 21;
+static lgfx::PointerWrapper* cacheSrc[FONT_CACHE_COUNT];
+static lgfx::VLWfont*        cacheFont[FONT_CACHE_COUNT];
 
 const lgfx::IFont* cachedFont(FontID id) {
-    if (id >= 16) return nullptr;
+    if (id >= FONT_CACHE_COUNT) return nullptr;
     if (cacheFont[id]) return cacheFont[id];
     const uint8_t* data = fontData(id);
     if (!data) return nullptr;
@@ -218,7 +243,7 @@ const lgfx::IFont* cachedFont(FontID id) {
 }
 
 void releaseCachedFonts() {
-    for (uint8_t i = 0; i < 16; i++) {
+    for (uint8_t i = 0; i < FONT_CACHE_COUNT; i++) {
         delete cacheFont[i];   // ~VLWfont frees the glyph tables
         delete cacheSrc[i];
         cacheFont[i] = nullptr;

@@ -45,6 +45,8 @@ CARD_LBL_CHARSET = list(range(0x20, 0x7F)) + [0xB0, 0xB7]   # ASCII + degree + m
 # Font sizes to generate: (name, ttf_filename, pixel_size[, charset])
 # Mixed weights match TFT_eSPI bitmap fonts: Font 1/2 were medium, Font 4 was bold.
 FONTS = [
+    ("inter_p4_progress", "Inter-Regular.ttf", 112, CARD_NUM_CHARSET),
+    ("inter_p4_value", "Inter-Regular.ttf", 40, CARD_LBL_CHARSET),
     ("inter_10", "Inter-Regular.ttf", 12),
     ("inter_14", "Inter-Regular.ttf", 16),
     ("inter_19", "Inter-Bold.ttf",    22),
@@ -72,9 +74,12 @@ FONTS_DIR = Path(__file__).parent.parent / "fonts"
 OUT_DIR = Path(__file__).parent.parent / "include" / "fonts"
 
 
-def generate_vlw(ttf_path: str, pixel_size: int, charset=None) -> bytes:
+def generate_vlw(ttf_path: str, pixel_size: int, charset=None, weight=None) -> bytes:
     """Generate VLW binary data for the given font and size."""
     face = freetype.Face(str(ttf_path))
+    if weight is not None:
+        axes = face.get_variation_info().axes
+        face.set_var_design_coords([weight if axis.tag == 'wght' else axis.default for axis in axes])
     face.set_pixel_sizes(0, pixel_size)
 
     glyphs = []

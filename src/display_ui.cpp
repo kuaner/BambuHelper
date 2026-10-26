@@ -1,4 +1,5 @@
 #include "display_ui.h"
+#include "display_p4.h"
 #include "display_gauges.h"
 #include "display_split.h"
 #include "display_card.h"
@@ -5985,6 +5986,25 @@ void updateDisplay() {
     }
     if (blackout) return;
   }
+
+#if defined(BOARD_IS_WS_P4_7B)
+  if (p4DashboardActive()) {
+    if (prevScreen == SCREEN_OFF || prevScreen == SCREEN_CLOCK) setBacklight(getEffectiveBrightness());
+    const bool changed = currentScreen != prevScreen;
+    if (glowConsumeCleanup()) forceRedraw = true;
+    const bool repainted = updateP4Dashboard(forceRedraw || changed);
+    prevScreen = currentScreen;
+    cardShownLast = cardShownNow = false;
+    forceRedraw = false;
+    if (tickP4Dashboard()) markFrameDirty();
+    // Keep existing finish/error glow behavior; the dashboard owns its pixels.
+    if (glowScreenEligible()) {
+      if (glowTick(tft, rotState.displayIndex, repainted)) markFrameDirty();
+    } else if (glowIsArmed()) glowDismiss();
+    return;
+  }
+  leaveP4Dashboard();
+#endif
 
 #if !DISPLAY_IS_ROUND
   // Shimmer runs at its own cadence (~40fps), independent of display refresh.

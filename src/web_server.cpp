@@ -13,6 +13,12 @@
 #include "ssdp_discovery.h"
 #include "wifi_manager.h"
 #include "display_ui.h"
+#include "display_p4.h"
+#include "thumb_fetch.h"
+#if defined(BOARD_IS_WS_P4_7B)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
 #include "display_card.h"
 #include "display_edge_glow.h"
 #include "config.h"
@@ -760,6 +766,28 @@ static void handleDebug() {
   touch["frames"] = td.frames;
   touch["presses"] = td.presses;
   touch["read_errors"] = td.readErrors;
+  const TouchContact contact = touchContact();
+  touch["valid"] = contact.valid;
+  touch["x"] = contact.x;
+  touch["y"] = contact.y;
+  doc["p4_dashboard"] = p4DashboardActive();
+  doc["p4_page"] = p4DashboardPage();
+  doc["p4_ams_page"] = p4DashboardAmsPage();
+  doc["p4_image"] = "printer";
+  const ThumbDiagnostics thumb = thumbDiagnostics(rotState.displayIndex);
+  JsonObject image = doc["thumbnail"].to<JsonObject>();
+  image["ready"] = thumb.ready;
+  image["fetching"] = thumb.fetching;
+  image["failures"] = thumb.failures;
+  image["task_http"] = thumb.taskHttp;
+  image["image_http"] = thumb.imageHttp;
+  image["bytes"] = thumb.bytes;
+  image["has_task"] = displayedPrinter().state.taskId[0] != 0;
+  image["plate"] = displayedPrinter().state.plateIdx;
+  doc["cloud_images"] = false;
+  doc["free_psram"] = ESP.getFreePsram();
+  doc["min_heap"] = ESP.getMinFreeHeap();
+  doc["loop_stack_min_bytes"] = uxTaskGetStackHighWaterMark(nullptr);
   doc["screen"] = getScreenState() == SCREEN_AMS ? "ams" : "status";
 #endif
   {
@@ -791,6 +819,16 @@ static void handleDebug() {
 // Byte-swapped RGB565 frame as a 24-bit BMP - the panel itself cannot be read back.
 // bandH > 0: buf is a Card band, re-rendered via cardBandView() as rows advance.
 static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t bandH) {
+  const int16_t sourceWidth = w;
+  // P4 previews keep transfer bounded on a slow ESP-Hosted link. Header crops
+  // remain full-resolution for checking baselines; scale=3 shows the full UI.
+  int16_t scale = 1;
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!bandH && server.hasArg("scale")) scale = constrain(server.arg("scale").toInt(), 1, 4);
+  if (!bandH && server.hasArg("header")) h = min<int16_t>(h, 76);
+#endif
+  w /= scale;
+  h /= scale;
   const uint32_t rowBytes = ((uint32_t)w * 3 + 3) & ~3u;
 #if defined(BOARD_IS_WS_P4_7B)
   constexpr uint8_t chunkRows = 8;
@@ -816,7 +854,7 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
     if (!server.client().connected() || millis() - t0 > maxSendMs) { server.client().stop(); return; }
     uint8_t* out = row.get() + rowBytes * pendingRows;
     memset(out, 0, rowBytes);
-    int16_t ly = y;
+    int16_t ly = y * scale;
     if (bandH) {
       const int16_t y0 = y - y % bandH;
       int16_t bw, bh, fh;
@@ -825,9 +863,9 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
       }
       ly = y - y0;
     }
-    const uint16_t* src = buf + (uint32_t)ly * w;
+    const uint16_t* src = buf + (uint32_t)ly * sourceWidth;
     for (int16_t x = 0; x < w; x++) {
-      uint16_t v = (uint16_t)((src[x] >> 8) | (src[x] << 8));   // sprite stores swapped RGB565
+      uint16_t v = (uint16_t)((src[x * scale] >> 8) | (src[x * scale] << 8));   // sprite stores swapped RGB565
       uint8_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
       out[x * 3 + 0] = (uint8_t)((b << 3) | (b >> 2));
       out[x * 3 + 1] = (uint8_t)((g << 2) | (g >> 4));

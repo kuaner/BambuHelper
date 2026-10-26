@@ -1,4 +1,5 @@
 #include "bambu_mqtt.h"
+#include "p4_telemetry.h"
 #include "bambu_state.h"
 #include "settings.h"
 #include "display_ui.h"
@@ -430,6 +431,9 @@ static bool sendLightCtrl(MqttConn& c, bool on) {
 }
 
 static void clearLiveMetrics(BambuState& s) {
+#if defined(BOARD_IS_WS_P4_7B)
+  s.p4Known = 0;
+#endif
   s.nozzleTemp = 0;    s.nozzleTarget = 0;
   s.nozzleTempN[0] = 0; s.nozzleTargetN[0] = 0;
   s.nozzleTempN[1] = 0; s.nozzleTargetN[1] = 0;
@@ -646,6 +650,13 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   pf["fan_gear"] = true;   // packed PWM 0-255 per fan (byte0=part, byte1=aux, byte2=chamber)
   pf["wifi_signal"] = true;
   pf["spd_lvl"] = true;
+#if defined(BOARD_IS_WS_P4_7B)
+  pf["nozzle_diameter"] = true;
+  pf["nozzle_type"] = true;
+  pf["device"]["nozzle"]["info"][0]["id"] = true;
+  pf["device"]["nozzle"]["info"][0]["diameter"] = true;
+  pf["device"]["nozzle"]["info"][0]["type"] = true;
+#endif
   pf["stat"] = true;       // H2/P2S door sensor (hex string, bit 0x00800000 = door open)
   pf["home_flag"] = true;  // X1 series door sensor (int, bit 23 = door open)
   pf["lights_report"][0]["node"] = true;  // chamber_light on/off/flashing state
@@ -723,6 +734,9 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
               uint32_t packed = entry["temp"].as<unsigned int>();
               s.nozzleTempN[id]   = (float)(packed & 0xFFFF);
               s.nozzleTargetN[id] = (float)(packed >> 16);
+#if defined(BOARD_IS_WS_P4_7B)
+              s.p4Known |= id == 0 ? P4_NOZZLE_R : P4_NOZZLE_L;
+#endif
             }
 
             if (id != s.activeNozzle) continue;
@@ -1072,11 +1086,17 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   if (print["mc_percent"].is<int>()) {
     corePrintData = true;
     s.progress = print["mc_percent"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_PROGRESS;
+#endif
   }
 
   if (print["mc_remaining_time"].is<int>()) {
     corePrintData = true;
     s.remainingMinutes = print["mc_remaining_time"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_REMAINING;
+#endif
   }
 
   // For dual-nozzle (H2D/H2C): nozzle_temper is the INACTIVE nozzle - skip it
@@ -1085,56 +1105,98 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
     if (print["nozzle_temper"].is<float>()) {
       corePrintData = true;
       s.nozzleTemp = print["nozzle_temper"].as<float>();
+#if defined(BOARD_IS_WS_P4_7B)
+      s.p4Known |= P4_NOZZLE;
+#endif
     } else if (print["nozzle_temper"].is<int>()) {
       corePrintData = true;
       s.nozzleTemp = print["nozzle_temper"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+      s.p4Known |= P4_NOZZLE;
+#endif
     }
 
     if (print["nozzle_target_temper"].is<float>()) {
       corePrintData = true;
       s.nozzleTarget = print["nozzle_target_temper"].as<float>();
+#if defined(BOARD_IS_WS_P4_7B)
+      s.p4Known |= P4_NOZZLE_TARGET;
+#endif
     } else if (print["nozzle_target_temper"].is<int>()) {
       corePrintData = true;
       s.nozzleTarget = print["nozzle_target_temper"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+      s.p4Known |= P4_NOZZLE_TARGET;
+#endif
     }
   }
 
   if (print["bed_temper"].is<float>()) {
     corePrintData = true;
     s.bedTemp = print["bed_temper"].as<float>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_BED;
+#endif
   } else if (print["bed_temper"].is<int>()) {
     corePrintData = true;
     s.bedTemp = print["bed_temper"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_BED;
+#endif
   }
 
   if (print["bed_target_temper"].is<float>()) {
     corePrintData = true;
     s.bedTarget = print["bed_target_temper"].as<float>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_BED_TARGET;
+#endif
   } else if (print["bed_target_temper"].is<int>()) {
     corePrintData = true;
     s.bedTarget = print["bed_target_temper"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_BED_TARGET;
+#endif
   }
 
   if (print["chamber_temper"].is<float>()) {
     corePrintData = true;
     s.chamberTemp = print["chamber_temper"].as<float>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   } else if (print["chamber_temper"].is<int>()) {
     corePrintData = true;
     s.chamberTemp = print["chamber_temper"].as<int>();
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   } else if (print["ctc"]["info"]["temp"].is<int>()) {
     // ctc.info.temp may be packed: (target << 16) | current — extract current
     corePrintData = true;
     s.chamberTemp = (float)(print["ctc"]["info"]["temp"].as<int>() & 0xFFFF);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   } else if (print["ctc"]["info"]["temp"].is<const char*>()) {
     corePrintData = true;
     s.chamberTemp = (float)((int)atof(print["ctc"]["info"]["temp"].as<const char*>()) & 0xFFFF);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   } else if (print["device"]["ctc"]["info"]["temp"].is<int>()) {
     // H2C/H2D: device.ctc.info.temp — packed: (target << 16) | current
     corePrintData = true;
     s.chamberTemp = (float)(print["device"]["ctc"]["info"]["temp"].as<int>() & 0xFFFF);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   } else if (print["device"]["ctc"]["info"]["temp"].is<const char*>()) {
     corePrintData = true;
     s.chamberTemp = (float)((int)atof(print["device"]["ctc"]["info"]["temp"].as<const char*>()) & 0xFFFF);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER;
+#endif
   }
 
   // H2D/H2C fallback: parse ctc.info.temp from raw payload via memmem
@@ -1153,6 +1215,9 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
         float ctcTemp = (float)(rawVal & 0xFFFF);
         if (ctcTemp > 0 && ctcTemp < 200) {
           s.chamberTemp = ctcTemp;
+#if defined(BOARD_IS_WS_P4_7B)
+          s.p4Known |= P4_CHAMBER;
+#endif
           corePrintData = true;
           MQTT_LOG("chamber temp from memmem ctc: %.1f", ctcTemp);
         }
@@ -1284,8 +1349,14 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   oldVal = parseFan(print["cooling_fan_speed"]);
   if (gearPresent) {
     corePrintData = true; s.coolingFanPct = pwmToPct((uint8_t)(gear & 0xFF));
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_PART_FAN;
+#endif
   } else if (!s.fanGearSeen && oldVal >= 0) {
     corePrintData = true; s.coolingFanPct = legacyToPct(oldVal);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_PART_FAN;
+#endif
   } else if (oldVal >= 0) {
     corePrintData = true;  // received legacy update on a gear-supporting printer; ignore value
   }
@@ -1293,8 +1364,14 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   oldVal = parseFan(print["big_fan1_speed"]);
   if (gearPresent) {
     corePrintData = true; s.auxFanPct = pwmToPct((uint8_t)((gear >> 8) & 0xFF));
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_AUX_FAN;
+#endif
   } else if (!s.fanGearSeen && oldVal >= 0) {
     corePrintData = true; s.auxFanPct = legacyToPct(oldVal);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_AUX_FAN;
+#endif
   } else if (oldVal >= 0) {
     corePrintData = true;
   }
@@ -1312,8 +1389,14 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   oldVal = parseFan(print["big_fan2_speed"]);
   if (gearPresent) {
     corePrintData = true; s.chamberFanPct = pwmToPct((uint8_t)((gear >> 16) & 0xFF));
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER_FAN;
+#endif
   } else if (!s.fanGearSeen && oldVal >= 0) {
     corePrintData = true; s.chamberFanPct = legacyToPct(oldVal);
+#if defined(BOARD_IS_WS_P4_7B)
+    s.p4Known |= P4_CHAMBER_FAN;
+#endif
   } else if (oldVal >= 0) {
     corePrintData = true;
   }
@@ -1376,6 +1459,19 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
       }
     }
   }
+
+#if defined(BOARD_IS_WS_P4_7B)
+  if (s.airductFuncs & 1u) s.p4Known |= P4_PART_FAN;
+  mergeP4NozzleMetadata(print, s);
+  if (s.airductFuncs & ((1u << 1) | (1u << 5))) s.p4Known |= P4_AUX_FAN;
+  if (print["nozzle_diameter"].is<float>() || print["nozzle_diameter"].is<const char*>()) {
+    const float diameter = print["nozzle_diameter"].is<const char*>()
+      ? atof(print["nozzle_diameter"].as<const char*>()) : print["nozzle_diameter"].as<float>();
+    if (diameter > 0 && diameter < 2) s.nozzleDiameter = diameter;
+  }
+  if (print["nozzle_type"].is<const char*>())
+    strlcpy(s.nozzleType, print["nozzle_type"].as<const char*>(), sizeof(s.nozzleType));
+#endif
 
   // Non-core fields: wifi_signal, spd_lvl, stat - don't count as core print data
   if (print["wifi_signal"].is<const char*>())
@@ -2314,6 +2410,22 @@ void resetMqttBackoff() {
     conns[i].lastReconnectAttempt = 0;  // force immediate retry
   }
   Serial.println("MQTT: backoff reset, reconnecting immediately");
+}
+
+bool requestPrinterStatusRefresh(uint8_t slot) {
+  if (slot >= MAX_ACTIVE_PRINTERS) return false;
+  MqttConn& c = conns[slot];
+  if (!c.active) return false;
+  static unsigned long lastRefresh[MAX_ACTIVE_PRINTERS] = {};
+  const unsigned long now = millis();
+  if (lastRefresh[slot] && now - lastRefresh[slot] < 5000) return false;
+  lastRefresh[slot] = now ? now : 1;
+  if (c.mqtt && c.mqtt->connected()) return requestPushall(c, PUSHALL_MANUAL);
+  c.consecutiveFails = 0;
+  c.printerUnreachable = false;
+  c.lastReconnectAttempt = 0;
+  c.disconnectSince = 0;
+  return true;
 }
 
 void requestCloudRefresh(uint8_t slot) {

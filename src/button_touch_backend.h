@@ -52,6 +52,11 @@ struct TouchDiagnostics {
   uint32_t readErrors;
 };
 TouchDiagnostics touchDiagnostics();
+#if defined(BOARD_IS_WS_P4_7B)
+struct TouchContact { bool down; bool valid; uint16_t x; uint16_t y; };
+// Snapshot of the same poll consumed by button.cpp; never polls I2C twice.
+TouchContact touchContact();
+#endif
 #endif
 
 #endif  // BUTTON_TOUCH_BACKEND_H

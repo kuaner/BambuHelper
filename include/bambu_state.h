@@ -202,7 +202,25 @@ inline uint64_t hmsKeyOf(uint32_t attr, uint32_t code) {
 
 #define PRINT_MAP_MAX 8
 
+#if defined(BOARD_IS_WS_P4_7B)
+// Presence is independent of value: a reported zero is valid telemetry.
+enum P4Metric : uint32_t {
+  P4_PROGRESS = 1 << 0, P4_REMAINING = 1 << 1,
+  P4_NOZZLE = 1 << 2, P4_NOZZLE_TARGET = 1 << 3,
+  P4_BED = 1 << 4, P4_BED_TARGET = 1 << 5, P4_CHAMBER = 1 << 6,
+  P4_PART_FAN = 1 << 7, P4_AUX_FAN = 1 << 8, P4_CHAMBER_FAN = 1 << 9,
+  P4_NOZZLE_R = 1 << 10, P4_NOZZLE_L = 1 << 11
+};
+#endif
+
 struct BambuState {
+#if defined(BOARD_IS_WS_P4_7B)
+  uint32_t p4Known;
+  float nozzleDiameter;
+  char nozzleType[24];
+  float nozzleDiameterN[2];
+  char nozzleTypeN[2][24];
+#endif
   bool connected;
   bool printing;
   char gcodeState[16];        // RUNNING, PAUSE, FINISH, IDLE, FAILED, PREPARE

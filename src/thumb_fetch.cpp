@@ -35,6 +35,7 @@ struct ThumbJob {
   uint8_t*    png;
   size_t      len;
   bool        ok;
+  int         taskHttp, imageHttp;
 };
 
 static portMUX_TYPE       g_mux     = portMUX_INITIALIZER_UNLOCKED;
@@ -43,13 +44,16 @@ static bool               g_running = false;     // loop-side only
 
 static bool fetchInto(ThumbJob* j) {
   static char url[640];   // one worker at a time
-  if (!cloudFetchPlateThumbUrl(j->token, j->region, j->taskId, j->plate, url, sizeof(url)))
+  if (!cloudFetchPlateThumbUrl(j->token, j->region, j->taskId, j->plate, url, sizeof(url), &j->taskHttp))
     return false;
   j->png = (uint8_t*)heap_caps_malloc(PNG_CAP, MALLOC_CAP_SPIRAM);
   if (!j->png) return false;
-  if (!cloudDownload(url, j->png, PNG_CAP, &j->len)) return false;
+  if (!cloudDownload(url, j->png, PNG_CAP, &j->len, &j->imageHttp)) return false;
   static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-  if (j->len <= 33 || memcmp(j->png, sig, 8) != 0) return false;
+  const bool png=j->len>33 && memcmp(j->png,sig,8)==0;
+  const bool jpeg=j->len>4 && j->png[0]==0xff && j->png[1]==0xd8 &&
+    j->png[j->len-2]==0xff && j->png[j->len-1]==0xd9;
+  if (!png && !jpeg) return false;
   // Kept per printer until its job changes: give back the unused part of the cap.
   if (uint8_t* fit = (uint8_t*)heap_caps_realloc(j->png, j->len, MALLOC_CAP_SPIRAM)) j->png = fit;
   return true;
@@ -82,6 +86,7 @@ struct ThumbSlot {
   int16_t  size;
   uint16_t bg;
   bool     renderFailed;
+  int      taskHttp, imageHttp;
 };
 
 static ThumbSlot g_slots[MAX_PRINTERS];
@@ -109,6 +114,7 @@ static void collect() {
   g_running = false;
   ThumbSlot& t = g_slots[j->slot];
   const bool current = strcmp(t.task, j->taskId) == 0 && t.plate == j->plate;
+  if (current) { t.taskHttp=j->taskHttp; t.imageHttp=j->imageHttp; }
   if (current && j->ok) {
     t.png = j->png;                         // slot had none: fetches start only then
     t.pngLen = j->len;
@@ -140,6 +146,12 @@ static bool fetchDue(uint8_t i) {
   if (!t.task[0] || t.png || t.fails >= MAX_FAILS) return false;
   if (t.backoff && millis() - t.failAt < t.backoff) return false;
   return t.plate != 0;                      // 0 = pushall not in yet
+}
+
+ThumbDiagnostics thumbDiagnostics(uint8_t slot) {
+  if (slot>=MAX_PRINTERS) return {};
+  const auto& t=g_slots[slot];
+  return {t.png && !t.renderFailed,g_running,t.fails,t.taskHttp,t.imageHttp,t.pngLen};
 }
 
 void thumbService() {
@@ -214,6 +226,21 @@ static uint32_t be32(const uint8_t* p) {
 }
 
 static bool render(ThumbSlot& t, int16_t size, uint16_t bg) {
+  if (t.pngLen>4 && t.png[0]==0xff && t.png[1]==0xd8) {
+    if (!t.thumb) {
+      t.thumb=new (std::nothrow) lgfx::LGFX_Sprite(&tft);
+      if (!t.thumb) return false;
+      t.thumb->setPsram(true); t.thumb->setColorDepth(16);
+    }
+    if (t.thumb->width()!=size) {
+      t.thumb->deleteSprite();
+      if (!t.thumb->createSprite(size,size)) return false;
+    }
+    t.thumb->fillSprite(bg);
+    if (!t.thumb->drawJpg(t.png,t.pngLen,0,0,size,size,0,0,0,0,lgfx::datum_t::middle_center)) return false;
+    t.size=size; t.bg=bg; ++g_thumbGen;
+    return true;
+  }
   const uint32_t w = be32(t.png + 16), h = be32(t.png + 20);     // IHDR
   if (w == 0 || h == 0 || w > 1024 || h > 1024) return false;
 

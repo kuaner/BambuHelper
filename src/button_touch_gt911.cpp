@@ -35,6 +35,11 @@ static bool    seen     = false;
 static bool     lastDown    = false;
 static uint32_t lastFrameMs = 0;
 static uint32_t frameCount = 0, pressCount = 0, readErrors = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+static uint16_t contactX = 0, contactY = 0;
+static bool contactValid = false;
+TouchContact touchContact() { return {lastDown, contactValid, contactX, contactY}; }
+#endif
 // A controller that stops publishing while we believe a finger is down would
 // otherwise latch a permanent hold - which the power-confirm ring reads as a
 // deliberate hold and would act on. Nothing legitimately withholds a frame for
@@ -73,6 +78,9 @@ void touchInit() {
   #endif
   lastDown    = false;
   lastFrameMs = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+  contactValid = false;
+#endif
 
   Wire.begin(GT911_SDA, GT911_SCL);
   Wire.setClock(400000);
@@ -113,6 +121,9 @@ TouchPoll touchPoll() {
   uint8_t status = 0;
   if (!gt911Read(GT911_REG_STATUS, &status, 1)) {
     readErrors++;
+#if defined(BOARD_IS_WS_P4_7B)
+    contactValid = false;
+#endif
     return {TouchEvent::Unavailable, false};
   }
   if (!seen) {
@@ -125,14 +136,36 @@ TouchPoll touchPoll() {
   // the acknowledge write - there is no frame to acknowledge, and the loop
   // polls far faster than the GT911 reports.
   if ((status & 0x80) == 0) {
-    if (lastDown && (millis() - lastFrameMs) > DOWN_STALE_MS) lastDown = false;
+    if (lastDown && (millis() - lastFrameMs) > DOWN_STALE_MS) {
+      lastDown = false;
+#if defined(BOARD_IS_WS_P4_7B)
+      contactValid = false;
+#endif
+    }
     return {TouchEvent::None, lastDown};
   }
 
   const uint8_t points = status & 0x0F;
+#if defined(BOARD_IS_WS_P4_7B)
+  // Read coordinates BEFORE acknowledging the frame. Multiple fingers, a
+  // failed read or out-of-bounds coordinates cancel navigation until release.
+  if (points == 1) {
+    uint8_t xy[4];
+    if (gt911Read(0x8150, xy, sizeof(xy))) {
+      contactX = xy[0] | (xy[1] << 8);
+      contactY = xy[2] | (xy[3] << 8);
+      contactValid = contactX < 1024 && contactY < 600;
+    } else { contactValid = false; readErrors++; }
+  } else if (points != 0) contactValid = false;
+#endif
   // Always acknowledge a published frame, whatever the count - skipping this
   // wedges the controller on its current frame and touch dies after one tap.
-  gt911Write(GT911_REG_STATUS, 0);
+  if (!gt911Write(GT911_REG_STATUS, 0)) {
+    readErrors++;
+#if defined(BOARD_IS_WS_P4_7B)
+    contactValid = false;
+#endif
+  }
   const bool down = (points > 0 && points <= GT911_MAX_POINTS);
   frameCount++;
   if (down && !lastDown) pressCount++;

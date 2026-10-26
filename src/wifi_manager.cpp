@@ -423,6 +423,12 @@ static unsigned long reconnectInterval() {
   return WIFI_BACKOFF_PHASE3_MS;        // phase 3: 60s, indefinite
 }
 
+void refreshWiFiConnection() {
+  if (apMode) return;
+  lastReconnectAttempt = 0;
+  handleWiFi();
+}
+
 void handleWiFi() {
   if (apMode) {
     if (dnsServer) dnsServer->processNextRequest();

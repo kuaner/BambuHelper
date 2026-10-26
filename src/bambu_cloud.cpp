@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include "cloud_tls.h"
+#include "cloud_thumbnail.h"
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -245,51 +246,42 @@ class CappedSink : public Stream {
 };
 
 bool cloudFetchPlateThumbUrl(const char* token, CloudRegion region, const char* taskId,
-                             int plateIdx, char* url, size_t urlLen) {
-  url[0] = '\0';
-  String api = String(getBambuApiBase(region)) + "/v1/iot-service/api/user/task/" + taskId;
-  WiFiClientSecure tls;
-  tls.setTimeout(10);
-  tls.setHandshakeTimeout(10);
-  configureCloudTrust(tls);     // fail closed: no insecure retry with a Bearer
-  HTTPClient http;
-  if (!http.begin(tls, api)) return false;
-  http.setTimeout(10000);
-  setSlicerHeaders(http);
-  http.addHeader("Authorization", String("Bearer ") + token);
-  int code = http.GET();
-  int size = http.getSize();
-  if (code != 200 || size > 32768) {
-    Serial.printf("THUMB: task HTTP %d size %d\n", code, size);
-    http.end();
-    return false;
+                             int plateIdx, char* url, size_t urlLen, int* httpStatus) {
+  url[0]=0;
+  // Same-region, CA-verified fallback through the website's service proxy.
+  // The task list's cover is accepted only for this exact active task/plate.
+  const String taskPath=String("/v1/iot-service/api/user/task/")+taskId;
+  const String urls[]={String(getBambuApiBase(region))+taskPath,
+    String(getBambuSiteBase(region))+"/api"+taskPath,
+    String(getBambuApiBase(region))+"/v1/user-service/my/tasks?limit=10"};
+  for (const String& api : urls) {
+    WiFiClientSecure tls;
+    tls.setTimeout(10); tls.setHandshakeTimeout(10); configureCloudTrust(tls);
+    HTTPClient http;
+    if (!http.begin(tls,api)) continue;
+    http.setTimeout(10000); setSlicerHeaders(http);
+    http.addHeader("Authorization",String("Bearer ")+token);
+    const int code=http.GET(), size=http.getSize();
+    if (httpStatus) *httpStatus=code;
+    if (code!=200 || size>32768) { http.end(); continue; }
+    CappedSink sink(32768);
+    const int wrote=http.writeToStream(&sink); http.end();
+    if (wrote<0 || sink.over) continue;
+    JsonDocument filter;
+    filter["context"]["plates"][0]["index"]=true;
+    filter["context"]["plates"][0]["thumbnail"]["url"]=true;
+    filter["id"]=filter["cover"]=filter["plateIndex"]=true;
+    filter["hits"][0]["id"]=true;
+    filter["hits"][0]["cover"]=true;
+    filter["hits"][0]["plateIndex"]=true;
+    JsonDocument doc;
+    if (!deserializeJson(doc,sink.body,DeserializationOption::Filter(filter)) &&
+        selectCloudThumbnail(doc.as<JsonObjectConst>(),taskId,plateIdx,url,urlLen)) return true;
   }
-  CappedSink sink(32768);
-  const int wrote = http.writeToStream(&sink);
-  http.end();
-  if (wrote < 0 || sink.over) {
-    Serial.printf("THUMB: task body rejected (%d, over=%d)\n", wrote, sink.over);
-    return false;
-  }
-  const String& body = sink.body;
-
-  JsonDocument filter;
-  filter["context"]["plates"][0]["index"] = true;
-  filter["context"]["plates"][0]["thumbnail"]["url"] = true;
-  JsonDocument doc;
-  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
-  for (JsonObjectConst pl : doc["context"]["plates"].as<JsonArrayConst>()) {
-    if (pl["index"].as<int>() != plateIdx) continue;
-    const char* u = pl["thumbnail"]["url"] | "";
-    if (strncmp(u, "https://", 8) != 0 || strlen(u) >= urlLen) return false;
-    strlcpy(url, u, urlLen);
-    return true;
-  }
-  Serial.printf("THUMB: no plate %d in task %s\n", plateIdx, taskId);
   return false;
 }
 
-bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len) {
+bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len, int* httpStatus) {
   *len = 0;
   WiFiClientSecure tls;
   tls.setTimeout(10);
@@ -299,6 +291,7 @@ bool cloudDownload(const char* url, uint8_t* buf, size_t cap, size_t* len) {
   if (!http.begin(tls, url)) return false;
   http.setTimeout(10000);
   int code = http.GET();
+  if (httpStatus) *httpStatus=code;
   int size = http.getSize();
   if (code != 200 || size <= 0 || (size_t)size > cap) {
     Serial.printf("THUMB: download HTTP %d size %d\n", code, size);

@@ -2,7 +2,15 @@
 #define THUMB_FETCH_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "config.h"
+
+struct ThumbDiagnostics {
+  bool ready, fetching;
+  uint8_t failures;
+  int taskHttp, imageHttp;
+  size_t bytes;
+};
 
 // Plate thumbnail of a printer's current cloud job (HAS_CARD_THUMB), for the
 // Card left column and the Plate gauge tile. A one-shot worker task fetches the
@@ -19,10 +27,12 @@ void thumbService();
 bool thumbGet(int16_t size, uint16_t bg, const uint16_t** px, uint32_t* gen);
 // Same for printer slot `slot` (split view shows two printers at once).
 bool thumbGetSlot(uint8_t slot, int16_t size, uint16_t bg, const uint16_t** px, uint32_t* gen);
+ThumbDiagnostics thumbDiagnostics(uint8_t slot);
 #else
 inline void thumbService() {}
 inline bool thumbGet(int16_t, uint16_t, const uint16_t**, uint32_t*) { return false; }
 inline bool thumbGetSlot(uint8_t, int16_t, uint16_t, const uint16_t**, uint32_t*) { return false; }
+inline ThumbDiagnostics thumbDiagnostics(uint8_t) { return {}; }
 #endif
 
 #endif // THUMB_FETCH_H

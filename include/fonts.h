@@ -30,7 +30,11 @@ enum FontID : uint8_t {
     // Card temperature grid, DISPLAY_240x320 boards with HAS_CARD_SKIN only.
     // Elsewhere it falls back to FONT_LARGE.
     FONT_CARD_MID = 15,  // Inter Bold 32 px, digits + " -.:"
-    FONT_CJK = 16,      // P4: Chinese printer/task names, 24px built-in face
+    FONT_CJK = 16,      // P4: antialiased Chinese printer/task names, 24px
+    FONT_P4_CN_SMALL = 17,
+    FONT_P4_PROGRESS = 18,
+    FONT_P4_VALUE = 19,
+    FONT_P4_DURATION = 20,
 };
 
 // Sets the active font. Caches the last selection - calling setFont() repeatedly

@@ -4,7 +4,7 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-#define FW_VERSION          "v3.9.0"
+#define FW_VERSION          "v3.9.1"
 
 // Board variant — injected into the web UI for OTA asset filtering.
 // Normally set via build_flags in platformio.ini; this is a fallback.
@@ -292,9 +292,10 @@
 #define HAS_CARD_SKIN  0
 #endif
 
-// Plate thumbnail in the Card left column, fetched from Bambu Cloud. Needs
-// PSRAM for the 512x512 decode and the downloaded PNG.
-#if HAS_CARD_SKIN && defined(BOARD_HAS_PSRAM)
+// The P4 dashboard deliberately has no cloud image fetcher. A second TLS
+// session alongside cloud MQTT can destabilise its ESP-Hosted network link.
+// Its local printer artwork needs no network and stays in PSRAM.
+#if HAS_CARD_SKIN && defined(BOARD_HAS_PSRAM) && !defined(BOARD_IS_WS_P4_7B)
 #define HAS_CARD_THUMB  1
 #else
 #define HAS_CARD_THUMB  0

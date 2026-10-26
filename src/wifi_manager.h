@@ -6,6 +6,9 @@
 void startWiFiDuringSplash();
 void initWiFi();
 void handleWiFi();
+// One-shot recovery for the dashboard refresh button; normal retry backoff
+// and AP fallback policy are unchanged.
+void refreshWiFiConnection();
 bool isWiFiConnected();
 bool isAPMode();
 String getAPSSID();
