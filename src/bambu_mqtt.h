@@ -54,7 +54,7 @@ void disconnectBambuMqtt(uint8_t slot);  // disconnect specific slot
 bool isPrinterConfigured(uint8_t slot);
 bool isAnyPrinterConfigured();
 uint8_t getActiveConnCount();            // how many connections are live
-const MqttDiag& getMqttDiag(uint8_t slot = 0);
+MqttDiag getMqttDiag(uint8_t slot = 0);
 const char* pushallReasonToString(uint8_t reason);
 
 void resetMqttBackoff();                 // reset backoff + force immediate reconnect

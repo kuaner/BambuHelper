@@ -8,6 +8,10 @@ constexpr int LEFT = 22, TOP = 76, PANEL_W = 294, PANEL_H = 510;
 constexpr int CONTENT = 346, RIGHT = 1002, AMS_Y = 407;
 constexpr int PROGRESS_Y = 266;
 constexpr int TAB_Y = 86, TAB_H = 50;
+constexpr int INFO_X = 924, SETTINGS_X = 980;
+constexpr int DETAILS_X = 898, DETAILS_Y = 12, DETAILS_W = 52, DETAILS_H = 52;
+constexpr int IMAGE_X = 39, IMAGE_Y = 93, IMAGE_W = 260, IMAGE_H = 180;
+constexpr int IMAGE_CONTENT_H = 146, IMAGE_DOTS_Y = 260;
 struct Point { int x, y; };
 // Verified on the 7B: GT911 coordinates already match the mounted display at
 // user rotation 0 (e.g. a gear tap reports x=989, y=42). Only the optional

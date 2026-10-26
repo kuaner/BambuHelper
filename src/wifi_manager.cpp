@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include "p4_runtime.h"
 
 static bool apMode = false;
 static DNSServer* dnsServer = nullptr;
@@ -56,6 +57,9 @@ static void onStaEvent(arduino_event_id_t event, arduino_event_info_t info) {
       staLastReason = 0;
       staAuthRejected = false;
       staAssociated = false;
+#if defined(BOARD_IS_WS_P4_7B)
+      p4WifiGotIp();
+#endif
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
       uint8_t r = info.wifi_sta_disconnected.reason;
@@ -312,6 +316,9 @@ static void beginStaConnectAttempt() {
   WiFi.mode(WIFI_STA);
   applyStaticNetworkConfig();
   WiFi.begin(wifiSSID, wifiPass);
+#if defined(BOARD_IS_WS_P4_7B)
+  WiFi.setSleep(false);
+#endif
 #if BOARD_NEEDS_WIFI_TX_LIMIT
   if (wifiTxCapped) capTxPower();
 #endif
@@ -427,6 +434,30 @@ void refreshWiFiConnection() {
   if (apMode) return;
   lastReconnectAttempt = 0;
   handleWiFi();
+}
+
+#if defined(BOARD_IS_WS_P4_7B)
+void p4WifiServiceOnline() {
+  // Called by the Wi-Fi owner after GOT_IP. No display wait or NVS work here.
+  disconnectTime = 0;
+  reconnectAttempts = 0;
+  lastReconnectAttempt = 0;
+  phase3StartTime = 0;
+  configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
+  startMDNS();
+}
+#endif
+
+void recoverWiFiTransport(){
+#if defined(BOARD_IS_WS_P4_7B)
+  static uint32_t last=0;
+  if(apMode||(last&&millis()-last<60000))return;
+  last=millis();
+  Serial.println("WiFi: rebuilding associated link after repeated transport failures");
+  WiFi.disconnect(false,false);
+  WiFi.mode(WIFI_OFF);
+  beginStaConnectAttempt();
+#endif
 }
 
 void handleWiFi() {

@@ -9,6 +9,7 @@
 #include "wifi_manager.h"
 #include "buzzer.h"
 #include "led.h"
+#include "p4_camera_service.h"
 #include <WiFi.h>
 
 namespace {
@@ -26,6 +27,7 @@ uint32_t lastInteraction = 0;
 uint8_t previousRotation = 255;
 uint32_t previousWifiState = 0xffffffff;
 uint32_t lastProgressAnimation = 0;
+uint32_t previousCameraGeneration = 0;
 }
 bool p4DashboardActive() {
   const auto screen = getScreenState();
@@ -75,11 +77,7 @@ bool handleP4DashboardTouch() {
   if (gesture != p4ui::Gesture::None) {
     buzzerPlayClick(); ledOnUserInteraction(); lastInteraction = millis();
     const auto action = p4DashboardGesture(view, displayedPrinter().state, gesture, touch.origin());
-    if (action == P4Action::Refresh) {
-      requestPrinterStatusRefresh(rotState.displayIndex);
-      refreshWiFiConnection();
-      drawn = false;
-    } else if (action == P4Action::NextPrinter) {
+    if (action == P4Action::NextPrinter) {
       for (uint8_t i=1;i<MAX_PRINTERS;++i) {
         const uint8_t next=(rotState.displayIndex+i)%MAX_PRINTERS;
         if (isPrinterConfigured(next)) {
@@ -99,10 +97,15 @@ bool updateP4Dashboard(bool force) {
   }
   if (view.page>=0 && now-lastInteraction>60000) { view.page=-1; drawn=false; }
   const auto& p=displayedPrinter();
+  followP4ActiveAms(view,p.state.ams);
   const auto pages=p4AmsPageCount(p.state.ams);
   if (view.amsPage>=pages) view.amsPage=0;
   const time_t wall=time(nullptr);
   const uint32_t wifiState = static_cast<uint32_t>(WiFi.status());
+  uint32_t cameraGeneration=0;
+#if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
+  cameraGeneration=p4CameraGeneration();
+#endif
   // Transport timestamps are not visual changes. An identical delta report
   // should not decode artwork or repaint the entire display.
   BambuState snapshot=p.state;
@@ -110,7 +113,8 @@ bool updateP4Dashboard(bool force) {
   if (!force && drawn && now-lastDraw<250) return false;
   if (!force && drawn && !memcmp(&snapshot,&previous,sizeof(snapshot)) &&
       !memcmp(&p.config,&previousConfig,sizeof(p.config)) &&
-      !memcmp(&view,&previousView,sizeof(view)) && previousMinute==wall/60 && previousWifiState==wifiState) return false;
+      !memcmp(&view,&previousView,sizeof(view)) && previousMinute==wall/60 && previousWifiState==wifiState &&
+      previousCameraGeneration==cameraGeneration) return false;
   if (!frame.getBuffer()) {
     frame.setPsram(true); frame.setColorDepth(16); frame.createSprite(1024,600);
   }
@@ -123,6 +127,7 @@ bool updateP4Dashboard(bool force) {
   previous=snapshot; previousConfig=p.config; previousView=view;
   previousMinute=wall/60; lastDraw=now; drawn=true;
   previousWifiState=wifiState;
+  previousCameraGeneration=cameraGeneration;
   return true;
 }
 #endif

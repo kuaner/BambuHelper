@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include "display_ui.h"
 #include "display_p4.h"
+#include "p4_runtime.h"
+#include "p4_camera_service.h"
 #include "thumb_fetch.h"
 #include "settings.h"
 #include "wifi_manager.h"
@@ -174,10 +176,13 @@ static bool handleSplashPhase() {
     initWiFi();
     initWebServer();
     initBambuMqtt();
+    p4RuntimeStart();
     initButton();
     initBuzzer();
     initLed();
+#if !defined(BOARD_IS_WS_P4_7B)
     tasmotaInit();
+#endif
   }
 
   if (splashEnd > 0) {
@@ -1691,7 +1696,12 @@ void loop() {
     return;
   }
 
+#if defined(BOARD_IS_WS_P4_7B)
+  p4RuntimeSync();
+  tickP4CameraService();
+#else
   handleWiFi();
+#endif
   handleWebServer();
   ssdpTick();  // closes SSDP scan sockets when the window elapses (no-op otherwise)
   handleBoardPowerOff();
@@ -1707,8 +1717,10 @@ void loop() {
 #if HAS_HMS_UI
   handleErrorAlerts();
 #endif
+#if !defined(BOARD_IS_WS_P4_7B)
   processLightTimers();
   handleBedCooldownBuzzers();
+#endif
 
   buzzerTick();
   Battery::tick();
@@ -1751,7 +1763,9 @@ void loop() {
   }
 #endif
 
+#if !defined(BOARD_IS_WS_P4_7B)
   thumbService();
+#endif
   updateDisplay();
 
   // MQTT and rotation after display update - TLS reconnect can block for

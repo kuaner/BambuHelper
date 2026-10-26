@@ -142,10 +142,12 @@
 // so they stay at two - matching the long-standing 2-printer behavior.
 // PSRAM boards run up to four (= MAX_PRINTERS); hardware-confirmed that four
 // TLS sessions establish without the freeze, with ~51 KB internal heap free.
+#if !defined(MAX_ACTIVE_PRINTERS)
 #ifdef BOARD_HAS_PSRAM
 #define MAX_ACTIVE_PRINTERS   4       // max simultaneous MQTT connections
 #else
 #define MAX_ACTIVE_PRINTERS   2
+#endif
 #endif
 
 // =============================================================================

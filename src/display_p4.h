@@ -9,8 +9,10 @@ struct P4DashboardView {
   int8_t page = -1; // -1 home; 0 job, 1 filament, 2 device, 3 alerts, 4 settings
   uint8_t amsPage = 0;
   uint8_t alertOffset = 0;
+  bool showCamera = true;
+  bool amsManual = false;
 };
-enum class P4Action { None, Refresh, NextPrinter };
+enum class P4Action { None, NextPrinter };
 P4Action p4DashboardGesture(P4DashboardView& view, const BambuState& state,
                             p4ui::Gesture gesture, p4ui::Point origin);
 uint16_t accentP4(const BambuState& state);
@@ -19,6 +21,7 @@ uint16_t accentP4(const BambuState& state);
 void drawP4Progress(lgfx::LovyanGFX& canvas, int x, int y, int width,
                     uint8_t percent, uint32_t phase, uint16_t accent);
 uint8_t p4AmsPageCount(const AmsState& ams);
+void followP4ActiveAms(P4DashboardView& view,const AmsState& ams);
 void drawP4Dashboard(lgfx::LovyanGFX& canvas, const PrinterSlot& printer,
                      const P4DashboardView& view, time_t now, const char* deviceIp,
                      bool networkOnline, uint32_t progressPhase = 0);

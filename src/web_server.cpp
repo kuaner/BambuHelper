@@ -14,6 +14,7 @@
 #include "wifi_manager.h"
 #include "display_ui.h"
 #include "display_p4.h"
+#include "p4_camera_service.h"
 #include "thumb_fetch.h"
 #if defined(BOARD_IS_WS_P4_7B)
 #include <freertos/FreeRTOS.h>
@@ -511,7 +512,7 @@ static void handleStatus() {
   // 20s after connecting. Means a wrong serial (topic never matches) or the
   // printer is powered off - both look identical from the broker's side.
   {
-    const MqttDiag& d = getMqttDiag(slot);
+    const MqttDiag d = getMqttDiag(slot);
     doc["no_data"] = st.connected && d.messagesRx == 0 && d.connectTime > 0 &&
                      (millis() - d.connectTime) > 20000;
   }
@@ -653,7 +654,7 @@ static void handleDebug() {
   JsonArray arr = doc["printers"].to<JsonArray>();
   for (uint8_t i = 0; i < MAX_ACTIVE_PRINTERS; i++) {
     if (!isPrinterConfigured(i)) continue;
-    const MqttDiag& d = getMqttDiag(i);
+    const MqttDiag d = getMqttDiag(i);
     BambuState& st = printers[i].state;
     JsonObject p = arr.add<JsonObject>();
     p["slot"] = i;
@@ -824,6 +825,7 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
   // remain full-resolution for checking baselines; scale=3 shows the full UI.
   int16_t scale = 1;
 #if defined(BOARD_IS_WS_P4_7B)
+  scale = 3;
   if (!bandH && server.hasArg("scale")) scale = constrain(server.arg("scale").toInt(), 1, 4);
   if (!bandH && server.hasArg("header")) h = min<int16_t>(h, 76);
 #endif
@@ -831,7 +833,7 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
   h /= scale;
   const uint32_t rowBytes = ((uint32_t)w * 3 + 3) & ~3u;
 #if defined(BOARD_IS_WS_P4_7B)
-  constexpr uint8_t chunkRows = 8;
+  constexpr uint8_t chunkRows = 1;
   constexpr uint32_t maxSendMs = 15000;
 #else
   constexpr uint8_t chunkRows = 1;
@@ -2873,6 +2875,7 @@ static void handleCaptiveDetect() {
 }
 
 void initWebServer() {
+  initP4CameraService();
   // Captive portal detection endpoints (must be before onNotFound)
   server.on("/generate_204", HTTP_GET, handleCaptiveDetect);        // Android/Samsung
   server.on("/gen_204", HTTP_GET, handleCaptiveDetect);              // Android alt

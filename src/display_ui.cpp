@@ -1077,7 +1077,7 @@ static void drawConnectingMQTT() {
   }
 
   // Diagnostics (only after first attempt)
-  const MqttDiag& d = getMqttDiag(rotState.displayIndex);
+  const MqttDiag d = getMqttDiag(rotState.displayIndex);
   if (d.attempts + d.probes > 0) {
     setFont(tft, LY_F_SMALL);
     tft.setTextDatum(MC_DATUM);

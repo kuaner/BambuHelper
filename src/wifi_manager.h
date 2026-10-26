@@ -9,6 +9,8 @@ void handleWiFi();
 // One-shot recovery for the dashboard refresh button; normal retry backoff
 // and AP fallback policy are unchanged.
 void refreshWiFiConnection();
+void recoverWiFiTransport(); // rebuild an associated but unusable P4 link
+void p4WifiServiceOnline();
 bool isWiFiConnected();
 bool isAPMode();
 String getAPSSID();

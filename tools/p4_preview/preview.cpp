@@ -45,7 +45,23 @@ int main(int argc,char** argv) {
     std::vector<lgfx::bgr888_t> row(1024);
     for(int y=0;y<600;++y) { frame.readRectRGB(0,y,1024,1,row.data()); out.write(reinterpret_cast<char*>(row.data()),row.size()*3); }
   };
-  render("dashboard-demo");
+  using namespace p4ui;
+  render("dashboard-camera");
+  std::vector<uint16_t> cameraPage(1024 * 600);
+  frame.readRect(0, 0, 1024, 600, cameraPage.data());
+  p4DashboardGesture(v, s, p4ui::Gesture::Tap, {180, 200});
+  assert(v.page == -1 && !v.showCamera);
+  render("dashboard-printer");
+  std::vector<uint16_t> printerPage(1024 * 600);
+  frame.readRect(0, 0, 1024, 600, printerPage.data());
+  for (int y = 0; y < 600; ++y) for (int x = 0; x < 1024; ++x) {
+    const bool picture = x >= IMAGE_X && x < IMAGE_X + IMAGE_W &&
+                         y >= IMAGE_Y && y < IMAGE_Y + IMAGE_CONTENT_H;
+    const bool dots = y >= IMAGE_DOTS_Y - 5 && y <= IMAGE_DOTS_Y + 5;
+    if (!picture && !dots) assert(cameraPage[y * 1024 + x] == printerPage[y * 1024 + x]);
+  }
+  p4DashboardGesture(v, s, p4ui::Gesture::Tap, {180, 200});
+  assert(v.showCamera);
   const auto gradientA = p4ui::p4ProgressPixel(0, 340, 300, 0x65d9);
   const auto gradientB = p4ui::p4ProgressPixel(339, 340, 300, 0x65d9);
   assert(gradientA != gradientB);
@@ -59,9 +75,16 @@ int main(int argc,char** argv) {
   assert(frame.textWidth("100")<235); frame.setFont(nullptr);
   s.progress=100; render("progress-100"); s.progress=52;
   // Navigation tests execute the same hit targets used by the firmware.
-  using namespace p4ui;
+  s.ams.activeTray=5;followP4ActiveAms(v,s.ams);assert(v.amsPage==1&&!v.amsManual);
+  s.ams.activeTray=0;followP4ActiveAms(v,s.ams);assert(v.amsPage==0);
   p4DashboardGesture(v,s,Gesture::Left,{600,450}); assert(v.amsPage==1); render("ams-zero-humidity");
-  p4DashboardGesture(v,s,Gesture::Tap,{500,180}); assert(v.page==0); render("detail-job");
+  followP4ActiveAms(v,s.ams);assert(v.amsPage==1&&v.amsManual);
+  assert(v.showCamera);
+  p4DashboardGesture(v,s,Gesture::Tap,{500,180}); assert(v.page==-1);
+  p4DashboardGesture(v,s,Gesture::Tap,{500,500}); assert(v.page==-1);
+  p4DashboardGesture(v,s,Gesture::Tap,{180,200}); assert(v.page==-1&&!v.showCamera);
+  p4DashboardGesture(v,s,Gesture::Tap,{180,200}); assert(v.page==-1&&v.showCamera);
+  p4DashboardGesture(v,s,Gesture::Tap,{924,38}); assert(v.page==0); render("detail-job");
   p4DashboardGesture(v,s,Gesture::Tap,{370,110}); assert(v.page==1); render("detail-filament");
   p4DashboardGesture(v,s,Gesture::Left,{600,450}); assert(v.amsPage==2); render("external-spool");
   p4DashboardGesture(v,s,Gesture::Tap,{600,110}); assert(v.page==2); render("detail-device");
@@ -71,8 +94,9 @@ int main(int argc,char** argv) {
   render("detail-alerts");
   p4DashboardGesture(v,s,Gesture::Up,{600,450}); assert(v.alertOffset==2);
   p4DashboardGesture(v,s,Gesture::Tap,{980,35}); assert(v.page==4); render("settings");
-  p4DashboardGesture(v,s,Gesture::Tap,{925,35}); assert(v.page==-1);
-  assert(p4DashboardGesture(v,s,Gesture::Tap,{925,35})==P4Action::Refresh);
+  p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);
+  p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==0);
+  p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);
   s.connected=false; render("offline");
   s={}; snprintf(s.subtaskName,sizeof(s.subtaskName),"超长中文任务名称用于验证边界不会覆盖右侧信息或超出屏幕显示范围"); render("unknown-data");
   s.connected=true; s.gcodeStateId=GCODE_IDLE; s.ams.unitCount=6; s.ams.trayUnitCount=4;

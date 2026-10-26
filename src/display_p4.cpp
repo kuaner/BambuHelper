@@ -5,6 +5,7 @@
 #include "fonts.h"
 #include "hms_lookup.h"
 #include "p4_printer_artwork.h"
+#include "p4_camera_service.h"
 #include <lgfx/utility/lgfx_qrcode.h>
 #include <algorithm>
 #include <cmath>
@@ -73,8 +74,8 @@ public:
   }
 };
 const char* stateName(const BambuState& s, bool networkOnline) {
-  if (!networkOnline) return "网络重连中 · 等待无线恢复";
-  if (!s.connected) return "打印机重连中 · 保留上次状态";
+  if (!networkOnline) return "网络重连中";
+  if (!s.connected) return "打印机重连中";
   switch (s.gcodeStateId) {
     case GCODE_RUNNING: return "正在打印";
     case GCODE_PAUSE: return "打印已暂停";
@@ -150,7 +151,7 @@ void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t n
   char name[100];
   snprintf(name, sizeof(name), "%s · %s", p.config.name[0] ? p.config.name : "打印机", modelFor(p.config).name);
   constexpr int headerAxis = 38;
-  int end = LEFT + cv.text(name, LEFT, headerAxis, 480, FG, FONT_CJK, 1, BG, true);
+  int end = LEFT + cv.text(name, LEFT, headerAxis, 320, FG, FONT_CJK, 1, BG, true);
   const char* ip = p.state.localIp[0] ? p.state.localIp : p.config.ip;
   if (ip[0]) cv.text(ip, end + 28, headerAxis, std::max(0, 784 - end - 28), MUTED, FONT_CJK, 1, BG, true);
   char clock[16] = "--:--";
@@ -161,43 +162,60 @@ void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t n
     cv.g.drawLine(928, 27, 914, 38, FG); cv.g.drawLine(914, 38, 928, 49, FG);
     cv.g.drawLine(914, 38, 941, 38, FG);
   } else {
-    cv.g.drawArc(926, 38, 12, 10, 40, 335, FG);
-    cv.g.fillTriangle(937, 26, 937, 37, 928, 32, FG);
+    cv.g.drawCircle(INFO_X,38,12,FG);
+    cv.g.fillCircle(INFO_X,31,1,FG);
+    cv.g.fillRect(INFO_X-1,36,3,10,FG);
   }
-  cv.g.drawCircle(980, 38, 10, FG); cv.g.drawCircle(980, 38, 4, FG);
+  cv.g.fillCircle(980,38,11,FG);
   for (int i = 0; i < 8; ++i) {
     float a = i * 3.14159265f / 4;
-    cv.g.drawLine(980 + cosf(a)*10, 38 + sinf(a)*10, 980 + cosf(a)*15, 38 + sinf(a)*15, FG);
+    const float nx=cosf(a),ny=sinf(a),tx=-ny*4,ty=nx*4;
+    const int x1=980+nx*9+tx,y1=38+ny*9+ty,x2=980+nx*15+tx,y2=38+ny*15+ty;
+    const int x3=980+nx*15-tx,y3=38+ny*15-ty,x4=980+nx*9-tx,y4=38+ny*9-ty;
+    cv.g.fillTriangle(x1,y1,x2,y2,x3,y3,FG);cv.g.fillTriangle(x1,y1,x3,y3,x4,y4,FG);
   }
+  cv.g.fillCircle(980,38,5,BG);
 }
 
-void printerPanel(Canvas& cv, const PrinterSlot& p) {
+void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view) {
   const auto& s = p.state;
   const auto& model = modelFor(p.config);
   cv.g.fillRoundRect(LEFT, TOP, PANEL_W, PANEL_H, 20, PAPER);
-  cv.g.drawEllipse(169,306,125,23,rgb(0xc5ccd2));
   // Decode only when the printer model changes; the thumbnail is static.
   static lgfx::LGFX_Sprite art;
   static const Model* artModel = nullptr;
   if (artModel != &model || !art.getBuffer()) {
-    if (!art.getBuffer()) { art.setPsram(true); art.setColorDepth(16); art.createSprite(260, 245); }
+    if (!art.getBuffer()) { art.setPsram(true); art.setColorDepth(16); art.createSprite(260, 146); }
     if (art.getBuffer()) {
       art.fillSprite(PAPER);
-      if (model.png) art.drawPng(model.png, model.bytes, 0, 0, 260, 245, 0, 0, 0, 0, lgfx::datum_t::middle_center);
+      if (model.png) art.drawPng(model.png, model.bytes, 0, 0, 260, 146, 0, 0, 0, 0, lgfx::datum_t::middle_center);
       else {
-        art.drawRoundRect(55, 18, 150, 206, 10, DIM);
-        art.drawRect(70, 55, 120, 145, DIM);
-        art.drawLine(82, 180, 178, 180, DIM);
-        art.fillTriangle(112, 174, 148, 174, 130, 145, DIM);
+        art.drawRoundRect(82,8,96,130,7,DIM);
+        art.drawRect(92,30,76,96,DIM);
       }
       artModel = &model;
     }
   }
-  if (art.getBuffer()) art.pushSprite(&cv.g,39,93);
-  cv.g.fillRoundRect(46, 347, 246, 3, 1, accent(s));
+  bool camera=false;
+#if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
+  if(view.showCamera){
+    if(drawP4Camera(cv.g,p,IMAGE_X,IMAGE_Y)) {
+      camera=true;
+    } else {
+      cv.g.fillRoundRect(IMAGE_X,IMAGE_Y,IMAGE_W,146,6,rgb(0xdbe1e4));
+      cv.text(p4CameraBusy()?"正在获取实景":"暂未获取实景",169,166,240,DIM,FONT_P4_CN_SMALL,1,rgb(0xdbe1e4),true,true);
+    }
+  }
+#endif
+  if(!camera&&art.getBuffer())art.pushSprite(&cv.g,IMAGE_X,IMAGE_Y);
+  // Keep the full 16:9 chamber image at the top. Only the two dots indicate
+  // manual image selection; there is no caption or decorative separator.
+  constexpr int dotsY=IMAGE_DOTS_Y;
+  cv.g.fillCircle(161,dotsY,4,view.showCamera?rgb(0xb8c2c8):DIM);
+  cv.g.fillCircle(177,dotsY,4,view.showCamera?DIM:rgb(0xb8c2c8));
   // All product metrics use one 20px face and shared row axes. In particular,
   // Latin values never silently select a larger Inter face than Chinese ones.
-  constexpr int networkY=378, speedY=422, nozzleY=466, fanY=510, fanLabelY=546;
+  constexpr int networkY=308,speedY=370,nozzleY=432,fanY=494,fanLabelY=538;
   auto productText = [&](const char* value,int x,int y,int width,uint16_t color) {
     cv.text(value,x,y,width,color,FONT_P4_CN_SMALL,1,PAPER,true);
   };
@@ -244,7 +262,11 @@ void temperature(Canvas& cv, const char* name, float value, float target, bool h
 }
 void job(Canvas& cv, const PrinterSlot& p, time_t now, bool networkOnline, uint32_t progressPhase) {
   const auto& s = p.state;
-  cv.text(s.subtaskName[0] ? jobDisplayName(s) : "等待新的打印任务", CONTENT,96,RIGHT-CONTENT,FG,FONT_CJK,1,BG,true);
+  char taskName[128]={};
+#if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
+  p4CameraJobName(p,taskName,sizeof(taskName));
+#endif
+  cv.text(taskName[0]?taskName:s.subtaskName[0] ? jobDisplayName(s) : "等待新的打印任务", CONTENT,96,RIGHT-CONTENT,FG,FONT_CJK,1,BG,true);
   const char* stage = runningStageLabel(s);
   if (stage || s.gcodeStateId != GCODE_RUNNING || !s.connected)
     cv.text(!s.connected ? stateName(s,networkOnline) : stage ? stage : stateName(s,networkOnline), CONTENT,128,RIGHT-CONTENT,accent(s),FONT_P4_CN_SMALL,1,BG,true);
@@ -383,7 +405,7 @@ void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now
         if (modules[bit/8] & (1u<<(7-bit%8))) cv.g.fillRect(768+x*5,205+y*5,5,5,0x0000);
       }
     }
-    row(cv,"触摸操作","点任务、耗材、打印机面板进入详情",397);
+    row(cv,"触摸操作","顶部 info 查看详情 · 点击图片切换实景与机型",397);
     row(cv,"多台打印机","首页顶部名称区域：切换打印机",453);
     cv.text("顶部返回键关闭 · Gauges 样式保留原有整屏手势",48,539,920,MUTED,FONT_SMALL_2X,.9f);
     return;
@@ -396,7 +418,11 @@ void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now
   }
   char b[180];
   if(v.page==0) {
-    cv.text(s.subtaskName[0]?jobDisplayName(s):"等待新的打印任务",48,161,920,FG,FONT_BODY_2X);
+    char title[128]={};
+#if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
+    p4CameraJobName(p,title,sizeof(title));
+#endif
+    cv.text(title[0]?title:s.subtaskName[0]?jobDisplayName(s):"等待新的打印任务",48,161,920,FG,FONT_BODY_2X);
     row(cv,"当前状态",stateName(s,networkOnline),225,accent(s));
     snprintf(b,sizeof(b),"%u / %u",s.layerNum,s.totalLayers); row(cv,"打印层数",s.totalLayers?b:"—",284);
     if(known(s,P4_REMAINING)&&s.printing) duration(b,sizeof(b),s.remainingMinutes); else snprintf(b,sizeof(b),"—");
@@ -454,13 +480,24 @@ uint8_t p4AmsPageCount(const AmsState& a) {
   for(uint8_t i=0;i<a.unitCount&&i<AMS_MAX_UNITS;++i) if(a.units[i].present) ++count;
   return count;
 }
+void followP4ActiveAms(P4DashboardView& v,const AmsState& a){
+  if(v.amsManual)return;
+  uint8_t page=0;
+  for(uint8_t i=0;i<a.unitCount&&i<AMS_MAX_UNITS;++i){
+    if(!a.units[i].present)continue;
+    if((a.activeTray<AMS_MAX_TRAYS&&a.activeTray/4==i)||
+       (a.activeTray==AMS_TRAY_OVERFLOW&&a.ovUnitId==a.units[i].id)){v.amsPage=page;return;}
+    ++page;
+  }
+  if(a.activeTray==254&&a.vtPresent)v.amsPage=page;
+}
 P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture gesture,p4ui::Point p) {
   using namespace p4ui;
   if(gesture==Gesture::None)return P4Action::None;
   const int pages=p4AmsPageCount(s.ams);
   if(gesture==Gesture::Left||gesture==Gesture::Right) {
     const int step=gesture==Gesture::Left?1:-1;
-    if(v.page<0 || (v.page==1&&p.y>=150)) { if(pages)v.amsPage=(v.amsPage+pages+step)%pages; }
+    if(v.page<0 || (v.page==1&&p.y>=150)) { if(pages){v.amsPage=(v.amsPage+pages+step)%pages;v.amsManual=true;} }
     else if(v.page<4) { v.page=(v.page+4+step)%4; v.alertOffset=0; }
     return P4Action::None;
   }
@@ -473,28 +510,24 @@ P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture
   }
   if(p.y<68) {
     if(p.x>=956) v.page=4;
-    else if(p.x>=900) { if(v.page>=0)v.page=-1; else return P4Action::Refresh; }
+    else if(p.x>=DETAILS_X&&p.x<DETAILS_X+DETAILS_W&&p.y>=DETAILS_Y&&p.y<DETAILS_Y+DETAILS_H)v.page=v.page>=0?-1:0;
     else if(p.x<790&&v.page<0)return P4Action::NextPrinter;
     return P4Action::None;
   }
   if(v.page>=0) {
     if(v.page<4&&p.y>=TAB_Y&&p.y<TAB_Y+TAB_H&&p.x>=40&&p.x<1000) { v.page=(p.x-40)/240; v.alertOffset=0; }
-    else if(v.page==1&&p.y>=155&&p.y<210&&p.x>850&&pages) v.amsPage=(v.amsPage+pages+(p.x<920?-1:1))%pages;
+    else if(v.page==1&&p.y>=155&&p.y<210&&p.x>850&&pages) {v.amsPage=(v.amsPage+pages+(p.x<920?-1:1))%pages;v.amsManual=true;}
   }
-#if HAS_HMS_UI
-  else if (p.y>=110 && p.y<145 && p.x>=860 && (s.hmsCount || s.printError)) v.page=3;
-#endif
-  else if(p.x>=LEFT&&p.x<LEFT+PANEL_W&&p.y>=TOP) v.page=2;
+  else if(p.x>=IMAGE_X&&p.x<IMAGE_X+IMAGE_W&&p.y>=IMAGE_Y&&p.y<IMAGE_Y+IMAGE_H)v.showCamera=!v.showCamera;
   else if(p.x>=CONTENT&&p.y>=AMS_Y) {
-    if(p.y<AMS_Y+40&&p.x>870&&pages)v.amsPage=(v.amsPage+pages+(p.x<936?-1:1))%pages;
-    else v.page=1;
-  } else if(p.x>=CONTENT&&p.y>=TOP) v.page=0;
+    if(p.y<AMS_Y+40&&p.x>870&&pages){v.amsPage=(v.amsPage+pages+(p.x<936?-1:1))%pages;v.amsManual=true;}
+  }
   return P4Action::None;
 }
 void drawP4Dashboard(lgfx::LovyanGFX& g,const PrinterSlot& p,const P4DashboardView& v,time_t now,const char* deviceIp,bool networkOnline,uint32_t progressPhase) {
   Canvas cv(g); g.fillScreen(BG); g.setTextWrap(false);
   header(cv,p,v,now);
-  if(v.page<0) { printerPanel(cv,p); job(cv,p,now,networkOnline,progressPhase); ams(cv,p.state,v.amsPage,CONTENT,AMS_Y,RIGHT-CONTENT,false); }
+  if(v.page<0) { printerPanel(cv,p,v); job(cv,p,now,networkOnline,progressPhase); ams(cv,p.state,v.amsPage,CONTENT,AMS_Y,RIGHT-CONTENT,false); }
   else details(cv,p,v,now,deviceIp,networkOnline);
   g.setTextSize(1); g.setFont(nullptr);
 }

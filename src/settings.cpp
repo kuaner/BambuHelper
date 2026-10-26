@@ -1,4 +1,7 @@
 #include "settings.h"
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_runtime.h"
+#endif
 #include "config.h"
 #include "button.h"
 #include "buzzer.h"
@@ -1222,7 +1225,14 @@ void savePrinterConfig(uint8_t index) {
   prefs.putUChar(key, cfg.lightOffDelayMin);
 
   if (needOpen) prefs.end();
+#if defined(BOARD_IS_WS_P4_7B)
+  p4WorkerPublishConfig(index, cfg);
+#endif
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_runtime.h"
+#endif
 
 void clearPrinterConfig(uint8_t index) {
   if (index >= MAX_PRINTERS) return;
@@ -1238,6 +1248,9 @@ void clearPrinterConfig(uint8_t index) {
   // Erase the slot's keys instead of persisting 14 default values - clearing
   // a printer is the moment its NVS entries should come back, not get rewritten.
   erasePrinterKeys(index, false);
+#if defined(BOARD_IS_WS_P4_7B)
+  p4WorkerPublishConfig(index, cfg);
+#endif
 }
 
 void saveRotationSettings() {

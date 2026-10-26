@@ -15,6 +15,6 @@ file(GLOB LGFX_SOURCES
 add_executable(p4_preview preview.cpp ${ROOT}/src/display_p4.cpp ${ROOT}/src/fonts.cpp
   ${ROOT}/src/hms_lookup.cpp ${LGFX_SOURCES}
   ${LGFX}/lgfx/v1/panel/Panel_Device.cpp ${LGFX}/lgfx/v1/panel/Panel_FrameBufferBase.cpp)
-target_compile_definitions(p4_preview PRIVATE P4_PREVIEW=1 LGFX_SDL BOARD_IS_WS_P4_7B=1 DISPLAY_1024x600=1 BOARD_HAS_PSRAM=1 BACKLIGHT_PIN=32)
+target_compile_definitions(p4_preview PRIVATE P4_PREVIEW=1 P4_CLOUD_CAMERA_EXPERIMENTAL=1 LGFX_SDL BOARD_IS_WS_P4_7B=1 DISPLAY_1024x600=1 BOARD_HAS_PSRAM=1 BACKLIGHT_PIN=32)
 target_include_directories(p4_preview PRIVATE ${CMAKE_CURRENT_BINARY_DIR} stubs ${ROOT}/src ${ROOT}/include ${LGFX})
 target_link_libraries(p4_preview PRIVATE SDL2::SDL2)
