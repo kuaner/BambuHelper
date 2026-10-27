@@ -2,6 +2,7 @@
 #include "config.h"
 #include "layout.h"
 #include "settings.h"
+#include "p4_tasmota_stub.h"
 #include "fonts.h"
 #include <time.h>
 #include <math.h>

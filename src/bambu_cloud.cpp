@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <mbedtls/base64.h>
 #include <time.h>
+#include "p4_json_allocator.h"
 
 // ---------------------------------------------------------------------------
 //  Region-aware URL helpers
@@ -167,7 +168,7 @@ bool cloudExtractUserId(const char* token, char* userId, size_t len) {
   String decoded = base64UrlDecode(payloadStart, payloadLen);
   if (decoded.length() == 0) return false;
 
-  JsonDocument doc;
+  JsonDocument doc(p4JsonAllocator());
   if (deserializeJson(doc, decoded)) return false;
 
   // Try common uid field names
@@ -195,7 +196,7 @@ bool cloudFetchUserId(const char* token, char* userId, size_t len, CloudRegion r
 
   if (httpCode != 200) return false;
 
-  JsonDocument doc;
+  JsonDocument doc(p4JsonAllocator());
   if (deserializeJson(doc, response)) return false;
 
   // uid can be a string ("uidStr") or a number ("uid")
@@ -267,14 +268,14 @@ bool cloudFetchPlateThumbUrl(const char* token, CloudRegion region, const char* 
     CappedSink sink(32768);
     const int wrote=http.writeToStream(&sink); http.end();
     if (wrote<0 || sink.over) continue;
-    JsonDocument filter;
+    JsonDocument filter(p4JsonAllocator());
     filter["context"]["plates"][0]["index"]=true;
     filter["context"]["plates"][0]["thumbnail"]["url"]=true;
     filter["id"]=filter["cover"]=filter["plateIndex"]=true;
     filter["hits"][0]["id"]=true;
     filter["hits"][0]["cover"]=true;
     filter["hits"][0]["plateIndex"]=true;
-    JsonDocument doc;
+    JsonDocument doc(p4JsonAllocator());
     if (!deserializeJson(doc,sink.body,DeserializationOption::Filter(filter)) &&
         selectCloudThumbnail(doc.as<JsonObjectConst>(),taskId,plateIdx,url,urlLen)) return true;
   }
@@ -331,7 +332,7 @@ bool cloudFetchDeviceList(const char* token, CloudRegion region, String& respons
 
 #if defined(BOARD_IS_WS_P4_7B)
 void cloudDiagnostics(CloudRegion region, String& response) {
-  JsonDocument out;
+  JsonDocument out(p4JsonAllocator());
   const time_t now = time(nullptr);
   out["utc_epoch"] = (int64_t)now;
   out["time_valid"] = now >= NTP_SYNCED_EPOCH;
@@ -367,7 +368,7 @@ void cloudDiagnostics(CloudRegion region, String& response) {
       probe["url"] = url;
       probe["http"] = status;
       probe["bytes"] = body.length();
-      JsonDocument parsed;
+      JsonDocument parsed(p4JsonAllocator());
       probe["json"] = !deserializeJson(parsed, body);
       probe["has_uid"] = !parsed["uid"].isNull() || !parsed["uidStr"].isNull();
       probe["has_devices"] = parsed["devices"].is<JsonArray>();

@@ -13,6 +13,7 @@
 #include "cloud_tls.h"
 #include "bambu_cloud.h"
 #include "cloud_job_name.h"
+#include "p4_json_allocator.h"
 
 namespace {
 int rng(void*,unsigned char* out,size_t length){esp_fill_random(out,length);return 0;}
@@ -70,9 +71,9 @@ void readJobName(HTTPClient& http,const P4CameraAccount& account,P4CameraResult&
     if(millis()-began>=10000)return;
   }
   const size_t used=body.size();if(!used)return;body.push_back(0);
-  JsonDocument filter;
+  JsonDocument filter(p4JsonAllocator());
   for(const char* field:{"id","deviceId","plateIndex","plateName","designTitleTranslated","designTitle"})filter["hits"][0][field]=true;
-  JsonDocument document;
+  JsonDocument document(p4JsonAllocator());
   if(!deserializeJson(document,body.data(),used,DeserializationOption::Filter(filter)))
     selectCloudJobName(document.as<JsonObjectConst>(),account.taskId,account.serial,account.plateIndex,result.jobName,sizeof(result.jobName));
 }
@@ -123,7 +124,7 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
   if(!account.token||!account.token[0]||strnlen(account.token,4097)>4096||!account.serial||!account.serial[0]||strnlen(account.serial,129)>128||
      !account.appPlatform||(strcmp(account.appPlatform,"macos")&&strcmp(account.appPlatform,"linux")&&strcmp(account.appPlatform,"windows"))){result.error=Error::Credentials;return result;}
   if(time(nullptr)<1735689600){result.error=Error::Clock;return result;}
-  if(heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<96*1024){result.error=Error::TooLarge;return result;}
+  if(heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<64*1024){result.error=Error::TooLarge;return result;}
   String certId,proof;
   if(account.progress)account.progress("signing");
   if(!buildProof(account,certId,proof,result)){result.error=Error::Credentials;return result;}
@@ -145,11 +146,11 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
     http.addHeader("x-bbl-app-certification-id",certId);http.addHeader("x-bbl-device-security-sign",proof);
     if(account.executableInfo){
       if(strnlen(account.executableInfo,8193)>8192){http.end();result.error=Error::Credentials;return result;}
-      JsonDocument executable;String compact;
+      JsonDocument executable(p4JsonAllocator());String compact;
       if(deserializeJson(executable,account.executableInfo)||!executable.is<JsonObject>()){http.end();result.error=Error::Credentials;return result;}
       serializeJson(executable,compact);http.addHeader("X-BBL-Executable-info",compact);
     }
-    JsonDocument request;request["dev_id"]=account.serial;request["dev_version"]=account.firmware?account.firmware:"";
+    JsonDocument request(p4JsonAllocator());request["dev_id"]=account.serial;request["dev_version"]=account.firmware?account.firmware:"";
     request["protocols"][0]="tutk";String body;serializeJson(request,body);
     result.httpStatus=http.POST(body);
     const int length=http.getSize();
@@ -157,7 +158,7 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
     BambuVector<char> response(length+1);
     const size_t read=http.getStreamPtr()->readBytes(response.data(),length);
     if(read!=size_t(length)){result.error=Error::Protocol;return result;}
-    response[length]=0;JsonDocument reply;
+    response[length]=0;JsonDocument reply(p4JsonAllocator());
     if(deserializeJson(reply,response.data(),length)){result.error=Error::Protocol;return result;}
     result.serviceCode=reply["code"]|0;
     if(result.httpStatus!=200){result.error=Error::Authentication;return result;}
@@ -169,7 +170,7 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
     http.end();tls.stop();
   }
   if(account.progress)account.progress("tutk_snapshot");
-  result.error=p4CaptureCloudSnapshot(ticket,jpeg);return result;
+  result.error=p4CaptureCloudSnapshot(ticket,jpeg,45000,&result.snapshotFailure);return result;
 } catch(...) {
   jpeg.clear();P4CameraResult result;result.error=bambu_camera::Error::TooLarge;return result;
 }
@@ -193,10 +194,11 @@ extern "C" P4CameraResult p4_cloud_camera_link_check(const P4CameraAccount& acco
 // Call only from a dedicated worker. The main UI/MQTT loop never waits on a
 // handshake or a snapshot. Image buffers and FEC data live in PSRAM.
 bambu_camera::Error p4CaptureCloudSnapshot(const obn::camera::tutk::TutkSessionParams& ticket,
-                                         BambuVector<uint8_t>& jpeg,unsigned timeout_ms){
+                                         BambuVector<uint8_t>& jpeg,unsigned timeout_ms,
+                                         bambu_camera::SnapshotFailure* failure){
   if(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)<1024*1024)
     return bambu_camera::Error::TooLarge;
-  try{return bambu_camera::capture(ticket,jpeg,timeout_ms);}
+  try{return bambu_camera::capture(ticket,jpeg,timeout_ms,failure);}
   catch(...){jpeg.clear();return bambu_camera::Error::TooLarge;}
 }
 #endif

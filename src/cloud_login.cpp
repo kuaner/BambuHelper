@@ -1,3 +1,4 @@
+#define P4_SETTINGS_NO_ALIAS
 #include "cloud_login.h"
 
 #if HAS_CLOUD_LOGIN
@@ -8,7 +9,13 @@
 #include <WiFiClientSecure.h>
 #include "cloud_tls.h"
 #include <ArduinoJson.h>
+#include "p4_json_allocator.h"
 #include <esp_task_wdt.h>
+#if defined(BOARD_IS_WS_P4_7B)
+extern P4UiSettings p4Settings;
+#define P4_SETTINGS_OWNER p4Settings
+#endif
+#include "p4_ui_globals.h"
 
 // ---------------------------------------------------------------------------
 //  Session state
@@ -23,6 +30,9 @@ static bool   g_neededTwoFactor = false;
 // A refused code leaves the flow waiting on the same step, so the state alone
 // cannot tell the portal whether to show the message as a prompt or a problem.
 static bool   g_lastFailed = false;
+static bool (*g_tokenHook)(const char*) = nullptr;
+
+void cloudLoginSetTokenHook(bool (*save)(const char*)) { g_tokenHook = save; }
 
 CloudLoginState cloudLoginState()   { return g_state; }
 const char*     cloudLoginMessage() { return g_message.c_str(); }
@@ -310,7 +320,7 @@ static bool ensureCsrf() {
 // Pull the error text the site returns, so the user sees Bambu's own wording
 // ("Incorrect account or password.") instead of a status code.
 static void setErrorFrom(const CloudResponse& r, const char* fallback) {
-  JsonDocument doc;
+  JsonDocument doc(p4JsonAllocator());
   if (r.body.length() > 0 && !deserializeJson(doc, r.body) && doc["error"].is<const char*>()) {
     fail((const char*)doc["error"]);
   } else {
@@ -321,7 +331,7 @@ static void setErrorFrom(const CloudResponse& r, const char* fallback) {
 // Bambu spells the token differently depending on which of its own endpoints
 // answered, and sometimes wraps the payload in "data".
 static String extractToken(const String& body) {
-  JsonDocument doc;
+  JsonDocument doc(p4JsonAllocator());
   if (body.length() == 0 || deserializeJson(doc, body)) return "";
 
   const char* keys[] = { "accessToken", "token" };
@@ -344,7 +354,7 @@ static bool storeToken(const String& token) {
     return fail("Bambu's token is larger than this device can store.");
   }
 
-  if (!saveCloudToken(token.c_str())) {
+  if (!(g_tokenHook ? g_tokenHook(token.c_str()) : saveCloudToken(token.c_str()))) {
     // A sign-in that reports success but silently lost its token leaves the
     // user with nothing to debug - refuse loudly instead.
     return fail("Signed in, but the token could not be stored - settings storage is full. Factory-reset (export settings first) and try again.");
@@ -372,7 +382,7 @@ static bool handleLoginReply(const CloudResponse& r) {
 
   // A cut-off body parses as nothing, which would otherwise be reported as a
   // reply that carried no token - two very different problems.
-  JsonDocument doc;
+  JsonDocument doc(p4JsonAllocator());
   DeserializationError err = deserializeJson(doc, r.body);
   if (r.truncated || err) {
     Serial.printf("CLOUD: login reply unreadable (%s), len=%d, truncated=%d\n",
@@ -450,7 +460,7 @@ bool cloudLoginWithPassword(const char* email, const char* password) {
   cloudLoginReset();
   g_email = email;
 
-  JsonDocument body;
+  JsonDocument body(p4JsonAllocator());
   body["account"]  = email;
   body["password"] = password;
   String payload;
@@ -470,7 +480,7 @@ bool cloudLoginRequestEmailCode(const char* email) {
   g_email = email;
   g_neededTwoFactor = true;      // this path never has a password to store
 
-  JsonDocument body;
+  JsonDocument body(p4JsonAllocator());
   body["email"] = email;
   body["type"]  = "codeLogin";
   String payload;
@@ -505,7 +515,7 @@ bool cloudLoginSubmitCode(const char* code) {
     return false;
   }
 
-  JsonDocument body;
+  JsonDocument body(p4JsonAllocator());
   if (tfa) {
     body["tfaKey"]  = g_tfaKey;
     body["tfaCode"] = code;
@@ -555,6 +565,8 @@ bool cloudLoginCanAutoRefresh() {
   char pw[CLOUD_PASSWORD_MAX + 1];
   return loadCloudPassword(pw, sizeof(pw));
 }
+
+bool cloudLoginNeededTwoFactor() { return g_neededTwoFactor; }
 
 bool cloudLoginRefreshStored() {
   // Somebody is standing at the portal holding a code. This runs from the MQTT

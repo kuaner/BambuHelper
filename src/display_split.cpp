@@ -14,6 +14,7 @@
 #include "hms_lookup.h"      // errorBadgeId, printerWasCanceled
 #include <string.h>
 #include <time.h>
+#include "p4_tasmota_stub.h"
 
 // Match display_ui.cpp / display_anim.cpp: themed background, not the literal
 // black CLR_BG from config.h.

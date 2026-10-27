@@ -3,16 +3,30 @@
 
 // Native 7B canvas. Shared by drawing and hit testing, including host previews.
 namespace p4ui {
+constexpr uint16_t PANEL_BACKGROUND = 0xef7e;  // #eceff1 in RGB565.
 constexpr int W = 1024, H = 600;
-constexpr int LEFT = 22, TOP = 76, PANEL_W = 294, PANEL_H = 510;
-constexpr int CONTENT = 346, RIGHT = 1002, AMS_Y = 407;
+constexpr int LEFT = 22, TOP = 76, PANEL_W = 326, PANEL_H = 510;
+constexpr int CONTENT = 378, RIGHT = 1002, AMS_Y = 407;
 constexpr int PROGRESS_Y = 266;
 constexpr int TAB_Y = 86, TAB_H = 50;
 constexpr int INFO_X = 924, SETTINGS_X = 980;
 constexpr int DETAILS_X = 898, DETAILS_Y = 12, DETAILS_W = 52, DETAILS_H = 52;
-constexpr int IMAGE_X = 39, IMAGE_Y = 93, IMAGE_W = 260, IMAGE_H = 180;
-constexpr int IMAGE_CONTENT_H = 146, IMAGE_DOTS_Y = 260;
+constexpr int IMAGE_X = LEFT + 16, IMAGE_Y = 90, IMAGE_W = PANEL_W - 32;
+constexpr int IMAGE_CONTENT_H = 236;
+constexpr int CAMERA_H = IMAGE_W * 9 / 16;
+constexpr int CAMERA_OFFSET_Y = (IMAGE_CONTENT_H - CAMERA_H) / 2;
+constexpr int IMAGE_META_Y = IMAGE_Y + CAMERA_OFFSET_Y + CAMERA_H + 16;
+constexpr int IMAGE_DOTS_Y = 350;
+constexpr int IMAGE_H = IMAGE_DOTS_Y + 12 - IMAGE_Y;
+constexpr int PANEL_NETWORK_Y = 392, PANEL_ROW_STEP = 42;
 struct Point { int x, y; };
+inline bool imageContains(Point p) {
+  return p.x >= IMAGE_X && p.x < IMAGE_X + IMAGE_W &&
+         p.y >= IMAGE_Y && p.y < IMAGE_Y + IMAGE_H;
+}
+inline bool homeAmsContains(Point p) {
+  return p.x >= CONTENT && p.x < RIGHT && p.y >= AMS_Y && p.y < H;
+}
 // Verified on the 7B: GT911 coordinates already match the mounted display at
 // user rotation 0 (e.g. a gear tap reports x=989, y=42). Only the optional
 // user-requested 180-degree rotation needs a coordinate flip.

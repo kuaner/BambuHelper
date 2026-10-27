@@ -1,3 +1,4 @@
+#define P4_SETTINGS_NO_ALIAS
 #include <Arduino.h>
 #include "display_ui.h"
 #include "display_p4.h"
@@ -31,7 +32,19 @@
 SET_LOOP_TASK_STACK_SIZE(24 * 1024);
 #endif
 
+#if defined(BOARD_IS_WS_P4_7B)
+// No Tasmota tasks, light schedules or legacy LED automation on this dashboard.
+#include "p4_tasmota_stub.h"
+#endif
+
 static unsigned long splashEnd = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+P4UiSettings p4UiSettings;
+PrinterSlot* p4UiPrinters() { return p4UiSettings.printers; }
+uint8_t& p4UiActivePrinterIndex() { return p4UiSettings.activePrinterIndex; }
+RotationState& p4UiRotation() { return p4UiSettings.rotState; }
+#include "p4_ui_globals.h"
+#endif
 static unsigned long finishScreenStart = 0;
 static bool finishActive = false;          // guards finishScreenStart against millis() wrap
 static unsigned long idleClockStart = 0;   // when all printers became idle
@@ -173,10 +186,16 @@ static bool handleSplashPhase() {
   // Hold splash for 2s
   if (splashEnd > 0 && millis() > splashEnd) {
     splashEnd = 0;
+#if !defined(BOARD_IS_WS_P4_7B)
     initWiFi();
     initWebServer();
     initBambuMqtt();
+#endif
+#if defined(BOARD_IS_WS_P4_7B)
+    p4RuntimeStart(p4UiSettings);
+#else
     p4RuntimeStart();
+#endif
     initButton();
     initBuzzer();
     initLed();
@@ -775,7 +794,12 @@ static void handleWakeButton() {
   }
 
   // Hold gesture: LED dimming only when it is mapped there.
-  const bool holdLed = dispSettings.gestHold == GH_LED && ledSettings.enabled;
+  const bool holdLed = dispSettings.gestHold == GH_LED && ledSettings.enabled
+#if defined(BOARD_IS_WS_P4_7B)
+                       && false;  // No legacy hold-to-dim automation on P4.
+#else
+                       ;
+#endif
   const bool holdAms = dispSettings.gestHold == GH_AMS &&
 #if defined(BOARD_IS_WS_P4_7B)
                        amsGestureAvailable();
@@ -784,7 +808,11 @@ static void handleWakeButton() {
 #endif
 
   // Tick the dimmer every loop regardless of state - it owns the 2 s save debounce.
+#if defined(BOARD_IS_WS_P4_7B)
+  bool holdConsumed = false;
+#else
   bool holdConsumed = ledHoldDimUpdate(held, holdMs, suppressDim || !holdLed);
+#endif
 
   // #177: a single hold on the "Printer Off" screen opens the power-confirm modal
   // pre-armed for ON (no double-click, no wait-for-release). suppressDim above kept
@@ -1172,6 +1200,11 @@ static void updateDisplayedPrinterScreenState() {
   }
 
   BambuState& s = displayedPrinter().state;
+#if defined(BOARD_IS_WS_P4_7B)
+  // The P4 dashboard itself renders the connection state. Do not replace it
+  // with the legacy blocking/connecting page during a network interruption.
+  if (p4DashboardActive()) return;
+#endif
   if (!s.connected) {
     uint8_t displayed = rotState.displayIndex < MAX_ACTIVE_PRINTERS
                         ? rotState.displayIndex : 0;
@@ -1682,12 +1715,19 @@ void setup() {
 #endif
 
   loadSettings();
+#if defined(BOARD_IS_WS_P4_7B)
+  p4BootSettingsSnapshot(p4UiSettings);
+#endif
   recordBootSlotVersion();  // names this slot's fw for the OTA rollback UI
   initDisplay();
   Battery::begin();
   splashEnd = millis() + 2000;
   startWiFiDuringSplash();
+#if defined(BOARD_IS_WS_P4_7B)
+  setBacklight(p4UiSettings.brightness);
+#else
   setBacklight(brightness);
+#endif
 }
 
 void loop() {
@@ -1698,12 +1738,27 @@ void loop() {
 
 #if defined(BOARD_IS_WS_P4_7B)
   p4RuntimeSync();
-  tickP4CameraService();
+  p4UiPublishStatus();
+  handleWakeButton();
+  buzzerTick();
+  // State snapshots already describe Wi-Fi/MQTT loss. Keeping this evaluation
+  // behind a Wi-Fi gate would leave the previous screen latched indefinitely.
+  updateDisplayedPrinterScreenState();
+  handleDisplaySleepTimeouts();
+  handleConnectingScreenRecovery();
+  // The P4 dashboard does not run chamber-light, plug or status-LED automation.
+  updateDisplay();
+  p4UiPublishStatus();
+  if (getScreenState() != SCREEN_AMS) handleRotation();
+  flushFrame();
+  return;
 #else
   handleWiFi();
 #endif
   handleWebServer();
-  ssdpTick();  // closes SSDP scan sockets when the window elapses (no-op otherwise)
+#if !defined(BOARD_IS_WS_P4_7B)
+  ssdpTick();
+#endif
   handleBoardPowerOff();
   handleWakeButton();
 
@@ -1772,6 +1827,9 @@ void loop() {
   // several seconds so we handle it last to keep UI responsive.
   // Skip during auto-OTA: that path already holds a TLS session to GitHub
   // and a concurrent second TLS session to Bambu Cloud is unsupported.
+#if defined(BOARD_IS_WS_P4_7B)
+  if (getScreenState() != SCREEN_AMS) handleRotation();
+#else
   if (isWiFiConnected() && !isAPMode() && isAnyPrinterConfigured() && !isOtaAutoInProgress()) {
     handleBambuMqtt();
     // Freeze auto-rotation while the camera fullscreen or the power-confirm modal
@@ -1782,6 +1840,7 @@ void loop() {
         getScreenState() != SCREEN_AMS &&
         getScreenState() != SCREEN_DRY_PEEK) handleRotation();
   }
+#endif
 
   // Commit the framebuffer sprite to the panel. On JC3248W535 this is a
   // ~20ms QSPI push (300 KB @ 32MHz QIO); on all other boards it's a no-op

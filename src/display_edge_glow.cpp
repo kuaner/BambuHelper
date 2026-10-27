@@ -1,6 +1,7 @@
 #include "display_edge_glow.h"
 #include "config.h"
 #include "settings.h"
+#include "p4_tasmota_stub.h"
 
 // The controller logic (latching, phases, dismissal, timing) is identical on
 // every panel; only the renderer differs. Rectangular panels push full-width

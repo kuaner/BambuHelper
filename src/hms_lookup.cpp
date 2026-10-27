@@ -1,5 +1,6 @@
 #include "hms_lookup.h"
 #include "settings.h"   // dispSettings: master opt-out + severity filter
+#include "p4_tasmota_stub.h"
 
 #if HAS_HMS_UI
 

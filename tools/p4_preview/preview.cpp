@@ -1,12 +1,15 @@
 // Synthetic data only. Uses the actual firmware renderer, PNG decoder and fonts.
 #include "display_p4.h"
+#include "p4_camera_service.h"
 #include "settings.h"
 #include "fonts.h"
 #include <cassert>
 #include <fstream>
 #include <vector>
 #include <filesystem>
+#include <cstdio>
 DisplaySettings dispSettings = {};
+P4UiSettings p4UiSettings;
 int main(int argc,char** argv) {
   const std::string output=argc>1?argv[1]:".cache/p4-preview";
   std::filesystem::create_directories(output);
@@ -37,6 +40,19 @@ int main(int argc,char** argv) {
   }
   s.ams.vtPresent=true; snprintf(s.ams.vtType,sizeof(s.ams.vtType),"PLA");
   P4DashboardView v;
+  assert(!v.showCamera);
+  {
+    bool live=false,chosen=false; uint32_t seen=0;
+    followP4CameraDefault(live,chosen,seen,1,false);
+    assert(!live&&seen==1);
+    followP4CameraDefault(live,chosen,seen,2,true);
+    assert(live);
+    chosen=true; live=false;
+    followP4CameraDefault(live,chosen,seen,3,true);
+    assert(!live);
+  }
+  // The remaining preview cases exercise both manually selected images.
+  v.showCamera = true;
   lgfx::LGFX_Sprite frame; frame.setColorDepth(16); frame.createSprite(1024,600);
   auto render=[&](const char* name) {
     drawP4Dashboard(frame,p,v,1792937760,"192.0.2.30",true);
@@ -54,14 +70,32 @@ int main(int argc,char** argv) {
   render("dashboard-printer");
   std::vector<uint16_t> printerPage(1024 * 600);
   frame.readRect(0, 0, 1024, 600, printerPage.data());
+  size_t outsideDifferences = 0;
   for (int y = 0; y < 600; ++y) for (int x = 0; x < 1024; ++x) {
     const bool picture = x >= IMAGE_X && x < IMAGE_X + IMAGE_W &&
-                         y >= IMAGE_Y && y < IMAGE_Y + IMAGE_CONTENT_H;
+                         y >= IMAGE_Y && y <= IMAGE_DOTS_Y + 5;
     const bool dots = y >= IMAGE_DOTS_Y - 5 && y <= IMAGE_DOTS_Y + 5;
-    if (!picture && !dots) assert(cameraPage[y * 1024 + x] == printerPage[y * 1024 + x]);
+    const bool timing = x >= IMAGE_X && x < IMAGE_X + IMAGE_W &&
+                        y >= IMAGE_META_Y - 12 && y < IMAGE_META_Y + 12;
+    if (!picture && !dots && !timing && cameraPage[y * 1024 + x] != printerPage[y * 1024 + x]) {
+      if (++outsideDifferences < 5)
+        std::fprintf(stderr, "Unexpected image-switch change at %d,%d\n", x, y);
+    }
   }
+  assert(outsideDifferences == 0);
   p4DashboardGesture(v, s, p4ui::Gesture::Tap, {180, 200});
   assert(v.showCamera);
+  // Gestures are scoped to the rectangle where they began. A swipe-like tap
+  // on the carousel must never switch AMS or latch its manual-page override.
+  const auto originalAmsPage = v.amsPage;
+  p4DashboardGesture(v,s,Gesture::Left,{180,200});
+  assert(!v.showCamera && v.amsPage==originalAmsPage && !v.amsManual);
+  p4DashboardGesture(v,s,Gesture::Right,{180,200});
+  assert(v.showCamera && v.amsPage==originalAmsPage && !v.amsManual);
+  p4DashboardGesture(v,s,Gesture::Left,{180,PANEL_NETWORK_Y});
+  assert(v.showCamera && v.amsPage==originalAmsPage && !v.amsManual);
+  p4DashboardGesture(v,s,Gesture::Left,{600,180});
+  assert(v.showCamera && v.amsPage==originalAmsPage && !v.amsManual);
   const auto gradientA = p4ui::p4ProgressPixel(0, 340, 300, 0x65d9);
   const auto gradientB = p4ui::p4ProgressPixel(339, 340, 300, 0x65d9);
   assert(gradientA != gradientB);
@@ -94,6 +128,14 @@ int main(int argc,char** argv) {
   render("detail-alerts");
   p4DashboardGesture(v,s,Gesture::Up,{600,450}); assert(v.alertOffset==2);
   p4DashboardGesture(v,s,Gesture::Tap,{980,35}); assert(v.page==4); render("settings");
+  p4DashboardGesture(v,s,Gesture::Tap,{1000,38}); assert(v.page==4);
+  p4DashboardGesture(v,s,Gesture::Tap,{1023,38}); assert(v.page==4);
+  p4DashboardGesture(v,s,Gesture::Tap,{955,38}); assert(v.page==4);
+  v.page=-1;
+  p4DashboardGesture(v,s,Gesture::Tap,{949,38}); assert(v.page==0);
+  p4DashboardGesture(v,s,Gesture::Tap,{1000,38}); assert(v.page==4);
+  p4DashboardGesture(v,s,Gesture::Tap,{949,38}); assert(v.page==-1);
+  v.page=4;
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==0);
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);

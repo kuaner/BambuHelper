@@ -4,6 +4,7 @@
   "license": "AGPL-3.0",
   "description": "Experimental standalone TUTK cloud snapshot transport; desktop plugins are not required at runtime.",
   "build": {
-    "flags": "-std=gnu++17"
+    "flags": "-std=gnu++17",
+    "includeDir": "../../include"
   }
 }

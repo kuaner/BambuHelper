@@ -26,11 +26,13 @@ struct P4CameraResult {
   int cryptoStep=0;
   int cryptoStatus=0;
   int metadataHttpStatus=0;
+  bambu_camera::SnapshotFailure snapshotFailure=bambu_camera::SnapshotFailure::None;
   char jobName[128]={};
 };
 P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
                                                BambuVector<uint8_t>& jpeg);
 void p4FetchCloudJobName(const P4CameraAccount& account,P4CameraResult& result);
 bambu_camera::Error p4CaptureCloudSnapshot(const obn::camera::tutk::TutkSessionParams& ticket,
-                                         BambuVector<uint8_t>& jpeg,unsigned timeout_ms=45000);
+                                         BambuVector<uint8_t>& jpeg,unsigned timeout_ms=45000,
+                                         bambu_camera::SnapshotFailure* failure=nullptr);
 #endif

@@ -532,11 +532,20 @@ struct PrinterSlot {
   BambuState state;
 };
 
+#if defined(BOARD_IS_WS_P4_7B)
+PrinterSlot* p4UiPrinters();
+uint8_t& p4UiActivePrinterIndex();
+#else
 extern PrinterSlot printers[MAX_PRINTERS];
 extern uint8_t activePrinterIndex;
+#endif
 
 inline PrinterSlot& activePrinter() {
+#if defined(BOARD_IS_WS_P4_7B)
+  return p4UiPrinters()[p4UiActivePrinterIndex()];
+#else
   return printers[activePrinterIndex];
+#endif
 }
 
 // ── Display rotation (multi-printer) ────────────────────────────────────────
@@ -557,11 +566,21 @@ struct RotationState {
   uint8_t splitIndexB;            // second printer slot shown in split view (displayIndex is the first)
 };
 
+#if defined(BOARD_IS_WS_P4_7B)
+RotationState& p4UiRotation();
+#else
 extern RotationState rotState;
+#endif
 
 inline PrinterSlot& displayedPrinter() {
+#if defined(BOARD_IS_WS_P4_7B)
+  RotationState& rotation = p4UiRotation();
+  uint8_t idx = rotation.displayIndex < MAX_PRINTERS ? rotation.displayIndex : 0;
+  return p4UiPrinters()[idx];
+#else
   uint8_t idx = rotState.displayIndex < MAX_PRINTERS ? rotState.displayIndex : 0;
   return printers[idx];
+#endif
 }
 
 #endif // BAMBU_STATE_H

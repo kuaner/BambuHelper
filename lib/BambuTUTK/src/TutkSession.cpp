@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Adapted from open-bamboo-networking; see ../NOTICE.md.
 #include "TutkSession.hpp"
+#include "Sequence.hpp"
 #include "Fec.hpp"
 #include "IotcProtocol.hpp"
 
@@ -205,9 +206,9 @@ public:
     {
         if (k == 0 || k > 32 || m > 4 || idx >= k + m || n > 1200) return;
         if (have_newest_) {
-            const int16_t d = (int16_t)(group - newest_);
-            if (d < -kKeepGroups) return;
-            if (d > 0) advance(group);
+            const int32_t d = sequence_age(group, newest_);
+            if (d > kKeepGroups) return;
+            if (d < 0) advance(group);
         } else {
             have_newest_ = true;
             newest_      = group;
@@ -277,7 +278,7 @@ private:
     {
         newest_ = group;
         for (auto it = groups_.begin(); it != groups_.end();) {
-            const int16_t age = (int16_t)(newest_ - it->first);
+            const int32_t age = sequence_age(newest_, it->first);
             if (age > 0 && !it->second.closed) close_lost(it->second);
             if (age > kKeepGroups || age < -kKeepGroups) it = groups_.erase(it);
             else ++it;
@@ -334,7 +335,7 @@ public:
 
     void add(const SliceHeader& h, const uint8_t* payload)
     {
-        if (have_next_ && (int32_t)(h.frame_no - next_) < 0) return;
+        if (have_next_ && sequence_before(h.frame_no, next_)) return;
         if (pending_.size() >= 4 && pending_.find(h.frame_no) == pending_.end()) return;
         Frame& f = pending_[h.frame_no];
         if (f.slices.empty()) {

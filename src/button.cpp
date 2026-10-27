@@ -2,6 +2,8 @@
 #include "settings.h"
 #include "buzzer.h"
 #include "button_touch_backend.h"
+#if defined(BOARD_IS_WS_P4_7B)
+#endif
 
 // Touch-driver specifics live in button_touch_<driver>.cpp behind the
 // button_touch_backend.h interface (mirrors the buzzer backends). This file owns

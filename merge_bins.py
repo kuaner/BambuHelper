@@ -62,6 +62,22 @@ BOARDS = {
         'build_env': 'ws_p4_lcd_7b_rev1',
         'board_id': 'ws_p4_lcd_7b_rev1',
     },
+    'ws_p4_lcd_7b_camera': {
+        'build_dir': '.pio/build/ws_p4_lcd_7b_camera',
+        'bootloader_offset': 0x2000,
+        'partitions_offset': 0x8000,
+        'firmware_offset': 0x10000,
+        'build_env': 'ws_p4_lcd_7b_camera',
+        'board_id': 'ws_p4_lcd_7b_camera',
+    },
+    'ws_p4_lcd_7b_rev1_camera': {
+        'build_dir': '.pio/build/ws_p4_lcd_7b_rev1_camera',
+        'bootloader_offset': 0x2000,
+        'partitions_offset': 0x8000,
+        'firmware_offset': 0x10000,
+        'build_env': 'ws_p4_lcd_7b_rev1_camera',
+        'board_id': 'ws_p4_lcd_7b_rev1_camera',
+    },
     'esp32s3': {
         'build_dir': '.pio/build/esp32s3',
         'bootloader_offset': 0x0,       # ESP32-S3 starts at 0x0
@@ -211,6 +227,8 @@ BOARDS = {
 BOARD_ALIASES = {
     'ws_p4_lcd_7b': 'ws_p4_lcd_7b',
     'ws_p4_lcd_7b_rev1': 'ws_p4_lcd_7b_rev1',
+    'ws_p4_lcd_7b_camera': 'ws_p4_lcd_7b_camera',
+    'ws_p4_lcd_7b_rev1_camera': 'ws_p4_lcd_7b_rev1_camera',
     'p4': 'ws_p4_lcd_7b',
     's3': 'esp32s3',
     'esp32s3': 'esp32s3',

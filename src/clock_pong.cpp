@@ -13,6 +13,7 @@
 #include "display_ui.h"
 #include "fonts.h"
 #include <time.h>
+#include "p4_tasmota_stub.h"
 
 // ========== Layout constants (from layout profile) ==========
 #define ARK_BRICK_ROWS    LY_ARK_BRICK_ROWS

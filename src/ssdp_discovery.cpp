@@ -3,14 +3,17 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_runtime.h"
+#include <atomic>
+#endif
 
 // ---------------------------------------------------------------------------
 //  Discovered-device table
 // ---------------------------------------------------------------------------
-// Everything here runs in the main loop task: ssdpTick() drains the sockets and
-// ssdpScanResultJson() is called from the (synchronous) web handler, which is
-// also serviced from loop(). They never run concurrently, so no locking is
-// needed. This deliberately avoids AsyncUDP + a critical-section spinlock, which
+// P4 uses a bounded worker and publishes a complete result snapshot for HTTP.
+// Other boards retain their original main-loop owner.
+// No socket is touched by the renderer. This deliberately avoids AsyncUDP + a critical-section spinlock, which
 // could deadlock with interrupts disabled during a concurrent save/TLS op.
 struct SsdpDevice {
   char serial[20];
@@ -31,7 +34,16 @@ static SsdpDevice s_devices[SSDP_MAX_DEVICES];
 
 static WiFiUDP s_udp2021;
 static WiFiUDP s_udp1990;
-static bool          s_scanActive  = false;
+#if defined(BOARD_IS_WS_P4_7B)
+static std::atomic<bool> s_scanActive{false};
+static std::atomic<bool> s_workerRunning{false};
+static std::atomic<bool> s_cancel{false};
+static std::atomic<int> s_opened{0};
+struct SsdpSnapshot { SsdpDevice devices[SSDP_MAX_DEVICES]{}; };
+static SpscLatest<SsdpSnapshot> published;
+#else
+static bool s_scanActive = false;
+#endif
 static bool          s_listening   = false;  // sockets currently open
 static unsigned long s_scanStartMs = 0;
 
@@ -143,6 +155,44 @@ static void closeSockets() {
 }
 
 int ssdpStartScan() {
+#if defined(BOARD_IS_WS_P4_7B)
+  // All P4 SSDP socket operations, including stop, have this one stack owner.
+  // Starting another scan must wait for the previous bounded run to retire.
+  if (s_workerRunning) return 0;
+  P4NetworkStatus network{};
+  if (!p4HttpNetworkSnapshot(network) || !network.online || network.ap) return 0;
+  s_cancel = false; s_scanActive = false; s_listening = false;
+  s_opened = 0;
+  if (s_workerRunning.exchange(true)) return 0;
+  auto worker = [](void*) {
+    memset(s_devices, 0, sizeof(s_devices));
+    published.update(SsdpSnapshot{});
+    s_opened = (s_udp2021.beginMulticast(SSDP_GROUP, 2021) ? 1 : 0) +
+               (s_udp1990.beginMulticast(SSDP_GROUP, 1990) ? 1 : 0);
+    s_listening = s_opened > 0;
+    s_scanActive = s_listening;
+    s_scanStartMs = millis();
+    while (!s_cancel && s_scanActive && millis() - s_scanStartMs <= SSDP_SCAN_MS) {
+      drainSocket(s_udp2021);
+      drainSocket(s_udp1990);
+      SsdpSnapshot snapshot;
+      memcpy(snapshot.devices, s_devices, sizeof(s_devices));
+      published.update(snapshot);
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    closeSockets();
+    s_scanActive = false;
+    s_cancel = false;
+    s_workerRunning = false;
+    vTaskDelete(nullptr);
+  };
+  if (xTaskCreate(worker, "p4_ssdp", 4096, nullptr, 1, nullptr) != pdPASS) {
+    s_workerRunning = false;
+    return 0;
+  }
+  for (unsigned i = 0; i < 100 && s_opened == 0; ++i) vTaskDelay(pdMS_TO_TICKS(2));
+  return s_opened;
+#else
   closeSockets();
   memset(s_devices, 0, sizeof(s_devices));
   s_scanActive = false;
@@ -158,14 +208,31 @@ int ssdpStartScan() {
   s_scanActive  = true;
   s_scanStartMs = millis();
   return opened;
+#endif
 }
 
 void ssdpStopScan() {
+#if defined(BOARD_IS_WS_P4_7B)
+  // The SSDP worker closes its own sockets on the next tick.
+  if (s_workerRunning) {
+    // Block only the HTTP owner until the socket owner has retired. This
+    // prevents ssdpStartScan() returning while another scan is still active.
+    s_cancel = true;
+    for (unsigned i = 0; i < 500 && s_workerRunning; ++i) vTaskDelay(pdMS_TO_TICKS(2));
+    if (s_workerRunning) return;
+    s_cancel = false;
+  }
+  s_scanActive = false;
+  return;
+#endif
   closeSockets();
   s_scanActive = false;
 }
 
 void ssdpTick() {
+#if defined(BOARD_IS_WS_P4_7B)
+  return; // The bounded SSDP worker owns its sockets and timeout.
+#endif
   if (!s_scanActive) return;
   drainSocket(s_udp2021);
   drainSocket(s_udp1990);
@@ -179,13 +246,20 @@ bool ssdpScanActive() { return s_scanActive; }
 void ssdpScanResultJson(String& out) {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
+#if defined(BOARD_IS_WS_P4_7B)
+  SsdpSnapshot snapshot{};
+  if (!published.copyLatest(snapshot)) { serializeJson(doc, out); return; }
+  const SsdpDevice* devices = snapshot.devices;
+#else
+  const SsdpDevice* devices = s_devices;
+#endif
   for (int i = 0; i < SSDP_MAX_DEVICES; i++) {
-    if (s_devices[i].serial[0] == '\0') continue;
+    if (devices[i].serial[0] == '\0') continue;
     JsonObject o = arr.add<JsonObject>();
-    o["serial"] = s_devices[i].serial;
-    o["ip"]     = s_devices[i].ip;
-    o["name"]   = s_devices[i].name;
-    o["model"]  = s_devices[i].model;
+    o["serial"] = devices[i].serial;
+    o["ip"]     = devices[i].ip;
+    o["name"]   = devices[i].name;
+    o["model"]  = devices[i].model;
   }
   serializeJson(doc, out);
 }

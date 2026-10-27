@@ -9,7 +9,8 @@ struct P4DashboardView {
   int8_t page = -1; // -1 home; 0 job, 1 filament, 2 device, 3 alerts, 4 settings
   uint8_t amsPage = 0;
   uint8_t alertOffset = 0;
-  bool showCamera = true;
+  bool showCamera = false;
+  bool cameraChosen = false;
   bool amsManual = false;
 };
 enum class P4Action { None, NextPrinter };
@@ -32,5 +33,6 @@ bool updateP4Dashboard(bool force); // true only when a full frame was repainted
 void leaveP4Dashboard();
 int p4DashboardPage(); // -1 home, otherwise the detail tab; diagnostics only
 uint8_t p4DashboardAmsPage();
+bool p4DashboardShowingCamera();
 bool tickP4Dashboard();
 #endif

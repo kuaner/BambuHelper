@@ -9,6 +9,7 @@
 #include "tasmota.h"
 #include "display_gauges.h"   // ellipsizeToWidth
 #include <time.h>
+#include "p4_tasmota_stub.h"
 
 // Base (1x) digit metrics for the simple clock. Layout-agnostic on purpose:
 // LY_ARK_* values in some layout profiles (e.g. layout_480x480.h) are already

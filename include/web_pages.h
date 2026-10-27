@@ -185,7 +185,7 @@ static const char PAGE_HTML_1[] PROGMEM = R"rawliteral(
   <button class="nav-item" type="button" data-section="colors"><span>Colors</span></button>
   <h4>Device</h4>
   <button class="nav-item" type="button" data-section="hardware"><span>Hardware</span></button>
-  <button class="nav-item" type="button" data-section="power"><span>Power</span></button>
+  %POWER_NAV%
   <button class="nav-item" type="button" data-section="wifi"><span>WiFi &amp; System</span></button>
   <h4>Support</h4>
   <button class="nav-item" type="button" data-section="diag"><span>Diagnostics</span></button>
@@ -1342,7 +1342,7 @@ R"rawliteral(
 </div>
 
 <!-- ===== Section 7: Power Monitoring ===== -->
-<div class="section" id="sec-power" hidden>
+<div class="section" id="sec-power" %POWER_HIDDEN%>
   <div class="section-intro">
     <h2>Power Monitoring</h2>
     <p>Show live power consumption from Tasmota, Shelly, or TP-Link Kasa smart plugs. Configure auto power-off and energy tariff per plug.</p>

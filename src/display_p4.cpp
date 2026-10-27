@@ -10,13 +10,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 
 namespace {
 using namespace p4ui;
 constexpr uint16_t rgb(unsigned c) { return ((c >> 8) & 0xf800) | ((c >> 5) & 0x7e0) | ((c >> 3) & 0x1f); }
 constexpr uint16_t BG = rgb(0x111416), FG = rgb(0xf3f7f5), MUTED = rgb(0xbec7ce);
 constexpr uint16_t GREEN = rgb(0x65d9a8), LINE = rgb(0x3c464e), SURFACE = rgb(0x1e2327);
-constexpr uint16_t PAPER = rgb(0xeceff1), INK = rgb(0x171b1e), DIM = rgb(0x46515a);
+constexpr uint16_t PAPER = PANEL_BACKGROUND, INK = rgb(0x171b1e), DIM = rgb(0x46515a);
 constexpr uint16_t ORANGE = rgb(0xffc17e), RED = rgb(0xf08080);
 struct Model { const char* prefix; const char* name; const uint8_t* png; size_t bytes; bool chamber; bool fans; };
 #define MODEL(prefix, name, asset, chamber, fans) {prefix, name, p4_art_##asset, sizeof(p4_art_##asset), chamber, fans}
@@ -147,13 +148,12 @@ const char* wifiQuality(int rssi) {
   return rssi >= -50 ? "Wi-Fi 极佳" : rssi >= -65 ? "Wi-Fi 良好" : rssi >= -75 ? "Wi-Fi 一般" : "Wi-Fi 较弱";
 }
 
-void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t now) {
+void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t now, const char* deviceIp) {
   char name[100];
   snprintf(name, sizeof(name), "%s · %s", p.config.name[0] ? p.config.name : "打印机", modelFor(p.config).name);
   constexpr int headerAxis = 38;
   int end = LEFT + cv.text(name, LEFT, headerAxis, 320, FG, FONT_CJK, 1, BG, true);
-  const char* ip = p.state.localIp[0] ? p.state.localIp : p.config.ip;
-  if (ip[0]) cv.text(ip, end + 28, headerAxis, std::max(0, 784 - end - 28), MUTED, FONT_CJK, 1, BG, true);
+  if (deviceIp && deviceIp[0]) cv.text(deviceIp, end + 28, headerAxis, std::max(0, 784 - end - 28), MUTED, FONT_CJK, 1, BG, true);
   char clock[16] = "--:--";
   if (now > 1700000000) { struct tm local; localtime_r(&now, &local); strftime(clock, sizeof(clock), "%H:%M", &local); }
   cv.text(clock, 814, 22, 86, FG, FONT_BODY_2X, .85f);
@@ -166,18 +166,29 @@ void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t n
     cv.g.fillCircle(INFO_X,31,1,FG);
     cv.g.fillRect(INFO_X-1,36,3,10,FG);
   }
-  cv.g.fillCircle(980,38,11,FG);
+  // A continuous toothed outline shares the info button's 24px envelope and
+  // one-pixel stroke. No filled disk or independent outer circle.
+  const auto gearPoint = [](float angle, float radius, int& x, int& y) {
+    x = SETTINGS_X + lroundf(cosf(angle) * radius);
+    y = 38 + lroundf(sinf(angle) * radius);
+  };
+  int firstX=0,firstY=0,previousX=0,previousY=0;
   for (int i = 0; i < 8; ++i) {
-    float a = i * 3.14159265f / 4;
-    const float nx=cosf(a),ny=sinf(a),tx=-ny*4,ty=nx*4;
-    const int x1=980+nx*9+tx,y1=38+ny*9+ty,x2=980+nx*15+tx,y2=38+ny*15+ty;
-    const int x3=980+nx*15-tx,y3=38+ny*15-ty,x4=980+nx*9-tx,y4=38+ny*9-ty;
-    cv.g.fillTriangle(x1,y1,x2,y2,x3,y3,FG);cv.g.fillTriangle(x1,y1,x3,y3,x4,y4,FG);
+    constexpr float step = 3.14159265f / 4;
+    for (int corner = 0; corner < 4; ++corner) {
+      const float a = i * step + (corner < 2 ? -.20f : .20f) * step;
+      const float radius = corner == 0 || corner == 3 ? 9 : 12;
+      int x=0,y=0; gearPoint(a,radius,x,y);
+      if (!i && !corner) { firstX=x; firstY=y; }
+      else cv.g.drawLine(previousX,previousY,x,y,FG);
+      previousX=x; previousY=y;
+    }
   }
-  cv.g.fillCircle(980,38,5,BG);
+  cv.g.drawLine(previousX,previousY,firstX,firstY,FG);
+  cv.g.drawCircle(SETTINGS_X,38,4,FG);
 }
 
-void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view) {
+void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view, time_t now) {
   const auto& s = p.state;
   const auto& model = modelFor(p.config);
   cv.g.fillRoundRect(LEFT, TOP, PANEL_W, PANEL_H, 20, PAPER);
@@ -185,10 +196,10 @@ void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view)
   static lgfx::LGFX_Sprite art;
   static const Model* artModel = nullptr;
   if (artModel != &model || !art.getBuffer()) {
-    if (!art.getBuffer()) { art.setPsram(true); art.setColorDepth(16); art.createSprite(260, 146); }
+    if (!art.getBuffer()) { art.setPsram(true); art.setColorDepth(16); art.createSprite(IMAGE_W, IMAGE_CONTENT_H); }
     if (art.getBuffer()) {
       art.fillSprite(PAPER);
-      if (model.png) art.drawPng(model.png, model.bytes, 0, 0, 260, 146, 0, 0, 0, 0, lgfx::datum_t::middle_center);
+      if (model.png) art.drawPng(model.png, model.bytes, 0, 0, IMAGE_W, IMAGE_CONTENT_H, 0, 0, 0, 0, lgfx::datum_t::middle_center);
       else {
         art.drawRoundRect(82,8,96,130,7,DIM);
         art.drawRect(92,30,76,96,DIM);
@@ -196,33 +207,52 @@ void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view)
       artModel = &model;
     }
   }
-  bool camera=false;
+  bool showPrinter=true;
 #if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
   if(view.showCamera){
-    if(drawP4Camera(cv.g,p,IMAGE_X,IMAGE_Y)) {
-      camera=true;
-    } else {
-      cv.g.fillRoundRect(IMAGE_X,IMAGE_Y,IMAGE_W,146,6,rgb(0xdbe1e4));
-      cv.text(p4CameraBusy()?"正在获取实景":"暂未获取实景",169,166,240,DIM,FONT_P4_CN_SMALL,1,rgb(0xdbe1e4),true,true);
+    showPrinter=false;
+    if(!drawP4Camera(cv.g,p,IMAGE_X,IMAGE_Y)) {
+      cv.text(p4CameraBusy()?"正在获取实景":"实景暂未就绪",LEFT+PANEL_W/2,
+              IMAGE_Y+IMAGE_CONTENT_H/2,IMAGE_W,DIM,FONT_P4_CN_SMALL,1,PAPER,true,true);
     }
+    P4CameraTiming timing;
+    p4CameraTiming(p,timing);
+    auto clockText=[](time_t stamp,char* out,size_t capacity) {
+      tm local{};
+      if (stamp && localtime_r(&stamp,&local)) strftime(out,capacity,"%H:%M:%S",&local);
+      else snprintf(out,capacity,"暂无");
+    };
+    char captured[32],stamp[32],line[112];
+    clockText(timing.capturedAt,captured,sizeof(captured));
+    const char* next=nullptr;
+    if(timing.busy) next="正在更新";
+    else if(!timing.automatic) next="已关闭";
+    else if(!strcmp(timing.blockedBy,"network")) next="等待网络";
+    else if(!strcmp(timing.blockedBy,"mqtt")) next="等待打印机";
+    else if(timing.blockedBy[0]) next="等待就绪";
+    else if(!timing.nextUpdateAt || timing.nextUpdateAt<=now) next="即将更新";
+    if(!next) {clockText(timing.nextUpdateAt,stamp,sizeof(stamp));next=stamp;}
+    snprintf(line,sizeof(line),"获取 %s  下次 %s",captured,next);
+    cv.text(line,LEFT+PANEL_W/2-10,IMAGE_META_Y,IMAGE_W,DIM,FONT_P4_CN_SMALL,1,PAPER,true,true);
   }
 #endif
-  if(!camera&&art.getBuffer())art.pushSprite(&cv.g,IMAGE_X,IMAGE_Y);
-  // Keep the full 16:9 chamber image at the top. Only the two dots indicate
-  // manual image selection; there is no caption or decorative separator.
+  if(showPrinter&&art.getBuffer())art.pushSprite(&cv.g,IMAGE_X,IMAGE_Y);
+  // Contain both sources in a fixed viewport. Neither switching nor the
+  // source aspect ratio can move the dots or any of the information rows.
   constexpr int dotsY=IMAGE_DOTS_Y;
-  cv.g.fillCircle(161,dotsY,4,view.showCamera?rgb(0xb8c2c8):DIM);
-  cv.g.fillCircle(177,dotsY,4,view.showCamera?DIM:rgb(0xb8c2c8));
+  cv.g.fillCircle(LEFT+PANEL_W/2-8,dotsY,4,view.showCamera?rgb(0xb8c2c8):DIM);
+  cv.g.fillCircle(LEFT+PANEL_W/2+8,dotsY,4,view.showCamera?DIM:rgb(0xb8c2c8));
   // All product metrics use one 20px face and shared row axes. In particular,
   // Latin values never silently select a larger Inter face than Chinese ones.
-  constexpr int networkY=308,speedY=370,nozzleY=432,fanY=494,fanLabelY=538;
+  constexpr int networkY=PANEL_NETWORK_Y,speedY=networkY+PANEL_ROW_STEP,
+                nozzleY=speedY+PANEL_ROW_STEP,fanY=nozzleY+PANEL_ROW_STEP,fanLabelY=fanY+32;
   auto productText = [&](const char* value,int x,int y,int width,uint16_t color) {
     cv.text(value,x,y,width,color,FONT_P4_CN_SMALL,1,PAPER,true);
   };
   productText("网络",42,networkY,68,DIM);
-  productText(wifiQuality(s.wifiSignal),110,networkY,190,INK);
+  productText(wifiQuality(s.wifiSignal),110,networkY,IMAGE_X+IMAGE_W-110,INK);
   productText("速度",42,speedY,68,DIM);
-  productText(speedName(s.speedLevel),110,speedY,190,INK);
+  productText(speedName(s.speedLevel),110,speedY,IMAGE_X+IMAGE_W-110,INK);
   productText("喷嘴",42,nozzleY,68,DIM);
   char nozzle[24] = "—";
   const unsigned nozzleId = s.activeNozzle > 1 ? 0 : s.activeNozzle;
@@ -237,7 +267,7 @@ void printerPanel(Canvas& cv, const PrinterSlot& p, const P4DashboardView& view)
   }
   char nozzleLine[96];
   snprintf(nozzleLine, sizeof(nozzleLine), "%s  %s", nozzle, type[0] ? type : "规格未上报");
-  productText(nozzleLine,110,nozzleY,190,INK);
+  productText(nozzleLine,110,nozzleY,IMAGE_X+IMAGE_W-110,INK);
   productText("风扇",42,fanY,68,DIM);
   const uint8_t values[] = {s.coolingFanPct,s.auxFanPct,s.chamberFanPct};
   const uint32_t flags[] = {P4_PART_FAN,P4_AUX_FAN,P4_CHAMBER_FAN};
@@ -278,7 +308,7 @@ void job(Canvas& cv, const PrinterSlot& p, time_t now, bool networkOnline, uint3
 #endif
   char b[64];
   if (known(s, P4_PROGRESS)) snprintf(b, sizeof(b), "%u", std::min<unsigned>(100, s.progress)); else snprintf(b, sizeof(b), "—");
-  int width = cv.text(b,CONTENT-3,176,248,FG,FONT_P4_PROGRESS,1,BG,true);
+  int width = cv.text(b,CONTENT-3,176,226,FG,FONT_P4_PROGRESS,.95f,BG,true);
   if (known(s, P4_PROGRESS)) cv.text("%",CONTENT+width,202,45,accent(s),FONT_BODY_2X,1.15f,BG,true);
   cv.text("打印进度",CONTENT,238,190,MUTED,FONT_P4_CN_SMALL,1,BG,true);
   cv.text("预计剩余",608,142,220,MUTED,FONT_P4_CN_SMALL,1,BG,true);
@@ -328,7 +358,7 @@ void spool(Canvas& cv, const AmsTray* t, bool active, const char* label, int x, 
   cv.g.fillRect(x+5,y+14,3,44,DIM); cv.g.fillRect(x+33,y+14,3,44,DIM);
   if (active) { cv.g.drawRoundRect(x-1,y-1,43,71,7,GREEN); cv.g.drawRoundRect(x-2,y-2,45,73,8,GREEN); }
   cv.text(label,x+52,y+1,48,active?GREEN:MUTED,FONT_SMALL_2X,.95f);
-  cv.text(loaded && t->type[0] ? t->type : t ? "空料槽" : "未上报",x+96,y+1,width-175,FG,FONT_SMALL_2X,.95f);
+  cv.text(loaded && t->type[0] ? t->type : t ? "空料槽" : "未上报",x+96,y+1,width-188,FG,FONT_SMALL_2X,.85f);
   char amount[16] = "—";
   if (loaded && t->remain >= 0) snprintf(amount,sizeof(amount),"%d%%",t->remain);
   cv.text(amount,x+width-78,y+1,78,active?GREEN:FG,FONT_BODY_2X,.95f);
@@ -493,11 +523,15 @@ void followP4ActiveAms(P4DashboardView& v,const AmsState& a){
 }
 P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture gesture,p4ui::Point p) {
   using namespace p4ui;
-  if(gesture==Gesture::None)return P4Action::None;
+  if(gesture==Gesture::None || p.x<0 || p.x>=W || p.y<0 || p.y>=H)return P4Action::None;
   const int pages=p4AmsPageCount(s.ams);
   if(gesture==Gesture::Left||gesture==Gesture::Right) {
     const int step=gesture==Gesture::Left?1:-1;
-    if(v.page<0 || (v.page==1&&p.y>=150)) { if(pages){v.amsPage=(v.amsPage+pages+step)%pages;v.amsManual=true;} }
+    if(v.page<0) {
+      if(imageContains(p)) {v.showCamera=!v.showCamera;v.cameraChosen=true;}
+      else if(homeAmsContains(p)&&pages) {v.amsPage=(v.amsPage+pages+step)%pages;v.amsManual=true;}
+    }
+    else if(v.page==1&&p.y>=150) { if(pages){v.amsPage=(v.amsPage+pages+step)%pages;v.amsManual=true;} }
     else if(v.page<4) { v.page=(v.page+4+step)%4; v.alertOffset=0; }
     return P4Action::None;
   }
@@ -509,7 +543,7 @@ P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture
     return P4Action::None;
   }
   if(p.y<68) {
-    if(p.x>=956) v.page=4;
+    if(p.x>=SETTINGS_X-13&&p.x<W) v.page=4;
     else if(p.x>=DETAILS_X&&p.x<DETAILS_X+DETAILS_W&&p.y>=DETAILS_Y&&p.y<DETAILS_Y+DETAILS_H)v.page=v.page>=0?-1:0;
     else if(p.x<790&&v.page<0)return P4Action::NextPrinter;
     return P4Action::None;
@@ -518,7 +552,9 @@ P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture
     if(v.page<4&&p.y>=TAB_Y&&p.y<TAB_Y+TAB_H&&p.x>=40&&p.x<1000) { v.page=(p.x-40)/240; v.alertOffset=0; }
     else if(v.page==1&&p.y>=155&&p.y<210&&p.x>850&&pages) {v.amsPage=(v.amsPage+pages+(p.x<920?-1:1))%pages;v.amsManual=true;}
   }
-  else if(p.x>=IMAGE_X&&p.x<IMAGE_X+IMAGE_W&&p.y>=IMAGE_Y&&p.y<IMAGE_Y+IMAGE_H)v.showCamera=!v.showCamera;
+  else if(imageContains(p)) {
+    v.showCamera=!v.showCamera; v.cameraChosen=true;
+  }
   else if(p.x>=CONTENT&&p.y>=AMS_Y) {
     if(p.y<AMS_Y+40&&p.x>870&&pages){v.amsPage=(v.amsPage+pages+(p.x<936?-1:1))%pages;v.amsManual=true;}
   }
@@ -526,8 +562,8 @@ P4Action p4DashboardGesture(P4DashboardView& v,const BambuState& s,p4ui::Gesture
 }
 void drawP4Dashboard(lgfx::LovyanGFX& g,const PrinterSlot& p,const P4DashboardView& v,time_t now,const char* deviceIp,bool networkOnline,uint32_t progressPhase) {
   Canvas cv(g); g.fillScreen(BG); g.setTextWrap(false);
-  header(cv,p,v,now);
-  if(v.page<0) { printerPanel(cv,p,v); job(cv,p,now,networkOnline,progressPhase); ams(cv,p.state,v.amsPage,CONTENT,AMS_Y,RIGHT-CONTENT,false); }
+  header(cv,p,v,now,deviceIp);
+  if(v.page<0) { printerPanel(cv,p,v,now); job(cv,p,now,networkOnline,progressPhase); ams(cv,p.state,v.amsPage,CONTENT,AMS_Y,RIGHT-CONTENT,false); }
   else details(cv,p,v,now,deviceIp,networkOnline);
   g.setTextSize(1); g.setFont(nullptr);
 }

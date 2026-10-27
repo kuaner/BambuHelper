@@ -1,5 +1,7 @@
+#define P4_SETTINGS_NO_ALIAS
 #include "wifi_manager.h"
 #include <new>
+#include "p4_runtime.h"
 #include "settings.h"
 #include "display_ui.h"
 #include "config.h"
@@ -7,7 +9,17 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
-#include "p4_runtime.h"
+#include <esp_heap_caps.h>
+#include <atomic>
+#if defined(BOARD_IS_WS_P4_7B)
+static void beginStaConnectAttempt();
+static void stopAP();
+static P4UiSettings wifiSettings;
+#define P4_SETTINGS_OWNER wifiSettings
+#include "p4_legacy_aliases.h"
+#else
+#include "settings.h"
+#endif
 
 static bool apMode = false;
 static DNSServer* dnsServer = nullptr;
@@ -44,9 +56,28 @@ static void capTxPower() {
 // invisible; capture the reasons here. State covers everything since the last
 // successful IP, which is exactly the failed stretch that led to AP mode.
 static WifiFailInfo failInfo = {};
-static volatile uint8_t staLastReason = 0;
-static volatile bool staAuthRejected = false;
-static volatile bool staAssociated = false;
+static std::atomic<uint8_t> staLastReason{0};
+static std::atomic<bool> staAuthRejected{false}, staAssociated{false};
+
+#if defined(BOARD_IS_WS_P4_7B)
+void p4WifiApplySettings(const P4UiSettings& settings) { wifiSettings = settings; }
+bool p4WifiUpdateSettings(const P4UiSettings& settings) {
+  const bool changed = memcmp(&wifiSettings.netSettings, &settings.netSettings, sizeof(NetworkSettings)) != 0 ||
+                       strcmp(wifiSettings.wifiSSID, settings.wifiSSID) != 0 ||
+                       strcmp(wifiSettings.wifiPass, settings.wifiPass) != 0;
+  wifiSettings = settings;
+  if (changed) {
+    stopAP();
+    apMode = false;
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_OFF);
+    if (wifiSettings.wifiSSID[0]) beginStaConnectAttempt();
+    else startAP();
+  }
+  return changed;
+}
+bool p4WifiHasCredentials() { return wifiSettings.wifiSSID[0] != 0; }
+#endif
 
 static void onStaEvent(arduino_event_id_t event, arduino_event_info_t info) {
   switch (event) {
@@ -88,6 +119,16 @@ const WifiFailInfo& getWifiFailInfo() {
   return failInfo;
 }
 
+WifiFailInfo wifiFailureValue() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (isWiFiOwnedByWorker()) return failInfo;
+  WifiFailInfo snapshot{};
+  p4UiWifiFailureSnapshot(snapshot);
+  return snapshot;
+#endif
+  return failInfo;
+}
+
 const char* wifiFailKindName(WifiFailKind k) {
   switch (k) {
     case WIFI_FAIL_NOT_FOUND:     return "not_found";
@@ -114,9 +155,13 @@ static void diagnoseStaFailure() {
   int n;
   unsigned long t0 = millis();
   while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING && millis() - t0 < 10000) {
+#if defined(BOARD_IS_WS_P4_7B)
+    vTaskDelay(pdMS_TO_TICKS(50));
+#else
     delay(50);
     updateDisplay();
     flushFrame();  // JC3248W535: push sprite to panel during blocking loop
+#endif
   }
 
   bool exact = false, enterprise = false, secured = false;
@@ -172,11 +217,43 @@ static void diagnoseStaFailure() {
 }
 
 bool isWiFiConnected() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!isWiFiOwnedByWorker()) {
+    return p4WifiOnline();
+  }
+#endif
   return WiFi.status() == WL_CONNECTED;
 }
 
 bool isAPMode() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!isWiFiOwnedByWorker()) {
+    return p4WifiApMode();
+  }
+#endif
   return apMode;
+}
+
+bool isWiFiOwnedByWorker() {
+#if defined(BOARD_IS_WS_P4_7B)
+  void* owner = p4WifiTaskHandle();
+  return owner && xTaskGetCurrentTaskHandle() == owner;
+#else
+  return true;
+#endif
+}
+
+void getWiFiIpText(char* out, size_t size) {
+  if (!out || !size) return;
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!isWiFiOwnedByWorker()) {
+    P4NetworkStatus status;
+    if (p4NetworkSnapshot(status)) strlcpy(out, status.ip, size);
+    else out[0] = 0;
+    return;
+  }
+#endif
+  strlcpy(out, WiFi.localIP().toString().c_str(), size);
 }
 
 String getAPSSID() {
@@ -191,7 +268,7 @@ static void stopAP() {
   }
 }
 
-static void startAP() {
+void startAP() {
   MDNS.end();  // tear down any responder bound to the now-dead STA interface
 
   // Build SSID from MAC
@@ -221,7 +298,9 @@ static void startAP() {
 
   Serial.printf("AP started: %s (IP: %s)\n", ssidBuf,
                 WiFi.softAPIP().toString().c_str());
+#if !defined(BOARD_IS_WS_P4_7B)
   setScreenState(SCREEN_AP_MODE);
+#endif
 }
 
 static void applyStaticNetworkConfig() {
@@ -299,6 +378,7 @@ static void completeWiFiStartup() {
 
   // Show IP screen for 1.5 seconds if enabled
   if (netSettings.showIPAtStartup) {
+#if !defined(BOARD_IS_WS_P4_7B)
     setScreenState(SCREEN_WIFI_CONNECTED);
     unsigned long ipStart = millis();
     while (millis() - ipStart < 1500) {
@@ -306,6 +386,7 @@ static void completeWiFiStartup() {
       flushFrame();  // JC3248W535: push sprite to panel during blocking loop
       delay(50);
     }
+#endif
   }
 }
 
@@ -316,15 +397,15 @@ static void beginStaConnectAttempt() {
   WiFi.mode(WIFI_STA);
   applyStaticNetworkConfig();
   WiFi.begin(wifiSSID, wifiPass);
-#if defined(BOARD_IS_WS_P4_7B)
-  WiFi.setSleep(false);
-#endif
 #if BOARD_NEEDS_WIFI_TX_LIMIT
   if (wifiTxCapped) capTxPower();
 #endif
 }
 
 void startWiFiDuringSplash() {
+#if defined(BOARD_IS_WS_P4_7B)
+  return; // The Wi-Fi owner starts after the splash; the renderer never connects.
+#endif
   if (strlen(wifiSSID) == 0) return;
 
   Serial.printf("WiFi: starting background connect during splash: %s\n", wifiSSID);
@@ -334,6 +415,17 @@ void startWiFiDuringSplash() {
 }
 
 void initWiFi() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (strlen(wifiSSID) > 0) {
+    beginStaConnectAttempt();
+    splashStaStarted = true;
+    splashStaStartMs = millis();
+    disconnectTime = millis();
+  } else {
+    startAP();
+  }
+  return;
+#endif
   // If we have stored credentials, try STA mode
   if (strlen(wifiSSID) > 0) {
     setScreenState(SCREEN_CONNECTING_WIFI);
@@ -443,6 +535,7 @@ void p4WifiServiceOnline() {
   reconnectAttempts = 0;
   lastReconnectAttempt = 0;
   phase3StartTime = 0;
+  stopAP(); apMode = false; staProbing = false;
   configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
   startMDNS();
 }
@@ -461,6 +554,37 @@ void recoverWiFiTransport(){
 }
 
 void handleWiFi() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (apMode) {
+    if (dnsServer) dnsServer->processNextRequest();
+    if (!staProbing && millis() - lastStaProbe >= WIFI_STA_PROBE_INTERVAL) {
+      WiFi.begin(wifiSSID, wifiPass);
+      staProbing = true;
+      probeStartTime = millis();
+    } else if (staProbing && millis() - probeStartTime >= WIFI_STA_PROBE_CHECK_MS) {
+      if (WiFi.status() == WL_CONNECTED) {
+        stopAP(); WiFi.mode(WIFI_STA); apMode = false; staProbing = false;
+        p4WifiServiceOnline();
+      } else {
+        WiFi.disconnect(false); staProbing = false; lastStaProbe = millis();
+      }
+    }
+    return;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (disconnectTime) p4WifiServiceOnline();
+    disconnectTime = 0;
+    return;
+  }
+  if (!disconnectTime) disconnectTime = millis();
+  if (!lastReconnectAttempt || millis() - lastReconnectAttempt > reconnectInterval()) {
+    lastReconnectAttempt = millis();
+    reconnectAttempts++;
+    WiFi.disconnect(false);
+    WiFi.begin(wifiSSID, wifiPass);
+  }
+  return;
+#endif
   if (apMode) {
     if (dnsServer) dnsServer->processNextRequest();
 

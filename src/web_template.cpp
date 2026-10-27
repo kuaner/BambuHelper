@@ -11,7 +11,15 @@
 //  serveApPage() sends the small AP-mode page verbatim. No substitution.
 // =============================================================================
 
+#define P4_SETTINGS_NO_ALIAS
 #include "web_template.h"
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_runtime.h"
+#include "p4_cloud_worker.h"
+#include "p4_json_allocator.h"
+#include "web_server.h"
+#include <ArduinoJson.h>
+#endif
 #include "web_pages.h"
 
 #include "settings.h"
@@ -28,6 +36,13 @@
 #include "esp_ota_ops.h"   // OTASLOT token: next update partition size
 #include "tasmota.h"
 #include <Arduino.h>
+
+#if defined(BOARD_IS_WS_P4_7B)
+extern P4UiSettings p4Web;
+#define P4_SETTINGS_OWNER p4Web
+#include "p4_legacy_aliases.h"
+#define isPrinterConfigured(slot) p4HttpPrinterConfigured(slot)
+#endif
 
 #ifndef BOARD_NAME
 #define BOARD_NAME BOARD_VARIANT
@@ -51,7 +66,27 @@ static String ledHexColor(uint32_t rgb) {
 static bool resolvePlaceholder(const char* name, String& out) {
   PrinterConfig& cfg = printers[0].config;
   BambuState& st = printers[0].state;
+#if defined(BOARD_IS_WS_P4_7B)
+  p4HttpPrinterSnapshot(0, cfg, st);
+#endif
   char buf[8];
+
+  if (strcmp(name, "POWER_NAV") == 0) {
+    out = "<button class=\"nav-item\" type=\"button\" data-section=\"power\"";
+#if defined(BOARD_IS_WS_P4_7B)
+    out += " hidden";
+#endif
+    out += "><span>Power</span></button>";
+    return true;
+  }
+  if (strcmp(name, "POWER_HIDDEN") == 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+    out = "hidden";
+#else
+    out = "";
+#endif
+    return true;
+  }
 
   // --- Printer ---
   if (strcmp(name, "SSID") == 0)            { out = wifiSSID; return true; }
@@ -64,11 +99,22 @@ static bool resolvePlaceholder(const char* name, String& out) {
   if (strcmp(name, "REGION_EU") == 0)       { out = cfg.region == REGION_EU ? "selected" : ""; return true; }
   if (strcmp(name, "REGION_CN") == 0)       { out = cfg.region == REGION_CN ? "selected" : ""; return true; }
   if (strcmp(name, "CLOUD_STATUS") == 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+    JsonDocument status(p4JsonAllocator());
+    p4CloudStatusJson(status);
+    if (!status["has_token"].as<bool>()) out = "No token set";
+    else {
+      out = "Token active";
+      const char* email = status["email"] | "";
+      if (email[0]) { out += " ("; out += email; out += ")"; }
+    }
+#else
     char tokenBuf[32];
     if (!loadCloudToken(tokenBuf, sizeof(tokenBuf))) { out = "No token set"; return true; }
     out = "Token active";
     char email[96];
     if (loadCloudEmail(email, sizeof(email))) { out += " ("; out += email; out += ")"; }
+#endif
     return true;
   }
 
@@ -89,7 +135,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
 #endif
     return true;
   }
-  if (strcmp(name, "BRIGHT") == 0)          { out = String(brightness); return true; }
+  if (strcmp(name, "BRIGHT") == 0)          { out = String(p4PanelBrightness); return true; }
   if (strcmp(name, "NIGHTEN") == 0)         { out = dpSettings.nightModeEnabled ? "checked" : ""; return true; }
   if (strcmp(name, "NIGHTDISP") == 0)       { out = dpSettings.nightModeEnabled ? "block" : "none"; return true; }
   if (strcmp(name, "NBRIGHT") == 0)         { out = String(dpSettings.nightBrightness); return true; }
@@ -826,6 +872,10 @@ static bool resolvePlaceholder(const char* name, String& out) {
 
   // --- Tasmota power monitoring ---
   if (strcmp(name, "POWER_TAB_2") == 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+    out = "";
+    return true;
+#endif
     // Extra plug tabs beyond Plug 1 (ptab0 is static markup): one per active
     // printer slot. Empty on single-plug low-RAM boards, one tab on full-RAM,
     // three on PSRAM boards running four printers.
@@ -842,6 +892,10 @@ static bool resolvePlaceholder(const char* name, String& out) {
     return true;
   }
   if (strcmp(name, "POWER_SLOT_BLOCK") == 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+    out = "";
+    return true;
+#endif
 #if TASMOTA_PLUG_COUNT == 1
     out  = "<div class=\"field\"><label for=\"tsm_slot\">Assigned printer</label>";
     out += "<select id=\"tsm_slot\"><option value=\"255\">Any printer</option>";

@@ -10,8 +10,7 @@
 #include "buzzer.h"
 #include "led.h"
 #include "p4_camera_service.h"
-#include <WiFi.h>
-
+#include "p4_runtime.h"
 namespace {
 P4DashboardView view;
 p4ui::TouchTracker touch;
@@ -27,6 +26,7 @@ uint32_t lastInteraction = 0;
 uint8_t previousRotation = 255;
 uint32_t previousWifiState = 0xffffffff;
 uint32_t lastProgressAnimation = 0;
+uint32_t followedCameraGeneration = 0;
 uint32_t previousCameraGeneration = 0;
 }
 bool p4DashboardActive() {
@@ -36,6 +36,7 @@ bool p4DashboardActive() {
 }
 int p4DashboardPage() { return view.page; }
 uint8_t p4DashboardAmsPage() { return view.amsPage; }
+bool p4DashboardShowingCamera() { return view.showCamera; }
 // Animate only 656x8 pixels. No additional sprite, cloud connection, or
 // full-frame redraw is needed for the moving highlight.
 static uint32_t progressPhase(uint32_t now) {
@@ -92,6 +93,7 @@ bool handleP4DashboardTouch() {
 bool updateP4Dashboard(bool force) {
   const uint32_t now=millis();
   if (previousSlot != rotState.displayIndex || previousRotation != dispSettings.rotation) {
+    if (previousSlot != rotState.displayIndex) followedCameraGeneration = 0;
     view=P4DashboardView{}; drawn=false; previousSlot=rotState.displayIndex;
     previousRotation=dispSettings.rotation;
   }
@@ -101,16 +103,21 @@ bool updateP4Dashboard(bool force) {
   const auto pages=p4AmsPageCount(p.state.ams);
   if (view.amsPage>=pages) view.amsPage=0;
   const time_t wall=time(nullptr);
-  const uint32_t wifiState = static_cast<uint32_t>(WiFi.status());
+  P4NetworkStatus network{};
+  p4NetworkSnapshot(network);
+  const uint32_t wifiState = network.wifiState;
   uint32_t cameraGeneration=0;
 #if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
   cameraGeneration=p4CameraGeneration();
+  followP4CameraDefault(view.showCamera,view.cameraChosen,followedCameraGeneration,
+                        cameraGeneration,p4CameraHasImage(p));
 #endif
   // Transport timestamps are not visual changes. An identical delta report
   // should not decode artwork or repaint the entire display.
   BambuState snapshot=p.state;
   snapshot.lastUpdate=0; snapshot.lastPrintDataMs=0;
-  if (!force && drawn && now-lastDraw<250) return false;
+  const bool viewChanged=memcmp(&view,&previousView,sizeof(view))!=0;
+  if (!force && drawn && !viewChanged && now-lastDraw<250) return false;
   if (!force && drawn && !memcmp(&snapshot,&previous,sizeof(snapshot)) &&
       !memcmp(&p.config,&previousConfig,sizeof(p.config)) &&
       !memcmp(&view,&previousView,sizeof(view)) && previousMinute==wall/60 && previousWifiState==wifiState &&
@@ -119,9 +126,17 @@ bool updateP4Dashboard(bool force) {
     frame.setPsram(true); frame.setColorDepth(16); frame.createSprite(1024,600);
   }
   setFont(tft,FONT_NONE);
-  const String ip=WiFi.localIP().toString();
+  const char* ip = network.ip;
   auto& target=frame.getBuffer()?static_cast<lgfx::LovyanGFX&>(frame):tft;
-  drawP4Dashboard(target,p,view,wall,ip.c_str(),WiFi.status() == WL_CONNECTED,progressPhase(now));
+  drawP4Dashboard(target,p,view,wall,ip,network.online,progressPhase(now));
+  if (p.state.lastPrintDataMs) {
+    static uint8_t firstFrameSlot = 255;
+    if (firstFrameSlot != rotState.displayIndex) {
+      firstFrameSlot = rotState.displayIndex;
+      Serial.printf("[data-stage] slot=%u dashboard_frame state=%s progress=%u\n",
+                    rotState.displayIndex, p.state.gcodeState, p.state.progress);
+    }
+  }
   if (frame.getBuffer()) frame.pushSprite(tft_ptr,0,0);
   markFrameDirty();
   previous=snapshot; previousConfig=p.config; previousView=view;

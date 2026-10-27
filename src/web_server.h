@@ -1,6 +1,11 @@
 #ifndef WEB_SERVER_H
 #define WEB_SERVER_H
 
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_ui_state.h"
+void p4WebInitialize(const P4UiSettings& settings);
+#endif
+
 void initWebServer();
 void handleWebServer();
 

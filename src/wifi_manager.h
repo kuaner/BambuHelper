@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 
+struct P4UiSettings;
+
 void startWiFiDuringSplash();
 void initWiFi();
 void handleWiFi();
@@ -11,8 +13,21 @@ void handleWiFi();
 void refreshWiFiConnection();
 void recoverWiFiTransport(); // rebuild an associated but unusable P4 link
 void p4WifiServiceOnline();
+#if defined(BOARD_IS_WS_P4_7B)
+bool p4WifiUpdateSettings(const P4UiSettings& settings);
+bool p4WifiHasCredentials();
+#endif
 bool isWiFiConnected();
 bool isAPMode();
+bool isWiFiOwnedByWorker();
+void getWiFiIpText(char* out, size_t size);
+#if defined(BOARD_IS_WS_P4_7B)
+void startAP();
+void* p4WifiTaskHandle();
+#else
+inline void* p4WifiTaskHandle() { return nullptr; }
+void startAP();
+#endif
 String getAPSSID();
 
 // Why the stored network could not be joined, worked out (disconnect reasons +
@@ -39,6 +54,7 @@ struct WifiFailInfo {
 };
 
 const WifiFailInfo& getWifiFailInfo();
+WifiFailInfo wifiFailureValue();
 const char* wifiFailKindName(WifiFailKind k);
 
 #endif // WIFI_MANAGER_H

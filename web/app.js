@@ -91,7 +91,7 @@ function startPolling(id){
   /* Errors move on their own schedule, not the user's - 5 s is plenty, and it
      is four slot fetches per tick. */
   if (id === 'errors') { refreshErrorCard(); statsTimer = setInterval(refreshErrorCard, 5000); }
-  if (id === 'power') { refreshPowerStats(); powerTimer = setInterval(refreshPowerStats, 5000); }
+  if (id === 'power' && document.getElementById('powerTabBar')) { refreshPowerStats(); powerTimer = setInterval(refreshPowerStats, 5000); }
   if (id === 'hardware' || id === 'wifi') { refreshHwInfo(); hwTimer = setInterval(refreshHwInfo, 5000); }
 }
 function stopPolling(){
@@ -516,6 +516,11 @@ function clSetLoginMode(m){
 // One place decides what the sign-in box shows, so the password step and the
 // code step cannot disagree about the current state.
 function clApplyLoginState(d){
+  if (d.pending){
+    document.getElementById('cl_loginMsg').textContent = 'Contacting Bambu...';
+    setTimeout(function(){fetch('/cloud/login/status').then(function(r){return r.json();}).then(clApplyLoginState).catch(function(){});},500);
+    return;
+  }
   var msg = document.getElementById('cl_loginMsg');
   var wrap = document.getElementById('cl_codeWrap');
   msg.textContent = d.message || '';
@@ -579,21 +584,34 @@ function loadAccountPrinters(){
   var btn = document.getElementById('cl_acctBtn');
   var sel = document.getElementById('cl_acctsel');
   btn.disabled = true; btn.textContent = 'Loading...';
-  fetch('/cloud/printers?region=' + document.getElementById('region').value)
-    .then(function(r){return r.json();})
-    .then(function(d){
+  var region = document.getElementById('region').value;
+  var pollGeneration = 0;
+  function pollAccountPrinters(d){
+      if (d.pending){
+        // Pending polls read status only. Calling the trigger endpoint again
+        // would queue another request as soon as the previous one finishes.
+        pollGeneration = d.generation || pollGeneration;
+        setTimeout(function(){fetch('/cloud/login/status').then(function(r){return r.json();}).then(pollAccountPrinters).catch(function(){});},500);
+        return;
+      }
+      if (d.result_kind !== undefined && Number(d.result_kind) !== 3) return;
+      var result = d.result || d;
+      if (d.generation && pollGeneration && Number(d.generation) < pollGeneration){
+        setTimeout(function(){fetch('/cloud/login/status').then(function(r){return r.json();}).then(pollAccountPrinters).catch(function(){});},500);
+        return;
+      }
       btn.disabled = false; btn.textContent = 'My printers';
       sel.innerHTML = '';
-      if (!d.printers || !d.printers.length){
+      if (!result.printers || !result.printers.length){
         sel.style.display = 'none';
-        showToast(d.message || 'No printers found on this account');
+        showToast(result.message || 'No printers found on this account');
         return;
       }
       var head = document.createElement('option');
-      head.value = ''; head.textContent = 'Select a printer (' + d.printers.length + ')';
+      head.value = ''; head.textContent = 'Select a printer (' + result.printers.length + ')';
       sel.appendChild(head);
-      for (var i = 0; i < d.printers.length; i++){
-        var pr = d.printers[i];
+      for (var i = 0; i < result.printers.length; i++){
+        var pr = result.printers[i];
         var o = document.createElement('option');
         o.value = pr.serial;
         o.setAttribute('data-name', pr.name || '');
@@ -601,7 +619,10 @@ function loadAccountPrinters(){
         sel.appendChild(o);
       }
       sel.style.display = '';
-    })
+    }
+  fetch('/cloud/printers?region=' + region)
+    .then(function(r){return r.json();})
+    .then(pollAccountPrinters)
     .catch(function(){
       btn.disabled = false; btn.textContent = 'My printers';
       showToast('Could not reach the Bambu account service');
@@ -2021,14 +2042,14 @@ applyThemeMode(document.documentElement.getAttribute('data-theme') || 'dark');
   var initId = 'printer';
   if (location.hash){
     var h = location.hash.substring(1);
-    if (SECTIONS.indexOf(h) >= 0) initId = h;
+    if (SECTIONS.indexOf(h) >= 0 && document.getElementById('sec-' + h)) initId = h;
   } else {
-    try { var saved = localStorage.getItem('bambu_section'); if (saved && SECTIONS.indexOf(saved) >= 0) initId = saved; } catch(e){}
+    try { var saved = localStorage.getItem('bambu_section'); if (saved && SECTIONS.indexOf(saved) >= 0 && document.getElementById('sec-' + saved)) initId = saved; } catch(e){}
   }
   loadSection(initId);
   applyLabelMaxlen();
   setTimeout(function(){ selectPrinterTab(0); }, 80);
-  setTimeout(function(){ selectPowerTab(0); }, 140);
+  if (document.getElementById('powerTabBar')) setTimeout(function(){ selectPowerTab(0); }, 140);
   refreshHwInfo();
   initRollback();
   refreshTopStatusDots();

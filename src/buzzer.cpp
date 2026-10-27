@@ -3,6 +3,8 @@
 #include "settings.h"
 #include "config.h"
 #include <time.h>
+#if defined(BOARD_IS_WS_P4_7B)
+#endif
 
 void sanitizeBuzzerPin() {
 #if BUZZER_BACKEND_TCA9554
@@ -287,6 +289,16 @@ void buzzerPlayClick() {
   if (!buzzerSettings.enabled) return;
   if (!buzzerSettings.buttonClick) return;
 
+#if defined(BOARD_IS_WS_P4_7B)
+  // P4 touch handling must not wait in the render loop for a click tone.
+  if (playing) return;
+  currentMelody = melodyClick;
+  melodyLen = sizeof(melodyClick) / sizeof(ToneStep);
+  melodyIdx = 0;
+  playing = true;
+  buzzerBackendApplyStep(currentMelody[0].freq);
+  stepStartMs = millis();
+#else
   bool wasPlaying = playing;
   buzzerBackendApplyStep(melodyClick[0].freq);
   unsigned long t = millis();
@@ -299,6 +311,7 @@ void buzzerPlayClick() {
     stepStartMs = millis();
     buzzerBackendApplyStep(currentMelody[melodyIdx].freq);
   }
+#endif
 }
 
 void buzzerTick() {

@@ -3,6 +3,7 @@
 #include "settings.h"
 #include "icons.h"
 #include "fonts.h"
+#include "p4_tasmota_stub.h"
 
 // Use user-configured bg color instead of hardcoded CLR_BG
 #undef  CLR_BG

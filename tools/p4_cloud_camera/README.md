@@ -47,29 +47,28 @@ into ESP firmware. `BAMBU_TUTK_FORCE_RELAY=1` is a diagnostic option; forced
 relay file transfer is not yet validated. Debug logging is opt-in and redacts
 UID, password and authkey; wire dumps are always disabled.
 
-## Experimental P4 service
+## P4 service
 
-Build/USB flash `ws_p4_lcd_7b_rev1_camera` only for pre-v3 silicon. Normal P4
-environments keep the experimental service disabled. Use `/camera/status` to
-inspect stages, HTTP status, image generation, allocation minima and stack
-headroom. It contains no credentials.
+Build/USB flash `ws_p4_lcd_7b_rev1_camera` for pre-v3 silicon, or
+`ws_p4_lcd_7b_camera` for Rev3.1+. The compile-time experimental label is kept
+to make the support boundary explicit. Use `/camera/status` to inspect stages,
+HTTP status, image generation, allocation minima and stack headroom. It
+contains no credentials.
 
 - `POST /camera/credentials`: import a JSON blob containing `certificate`
   (leaf PEM), `private_key` (PEM), `platform`, `device_id`, `firmware`, and
   `executable_info` (JSON object). This is a development provisioning route,
   following the existing device-local configuration model. No token is
   imported here, and there is no secret download route.
-- `POST /camera/capture`: start one background capture for the shown cloud
-  printer. Concurrent captures and rapid repeated requests are rejected.
-- `GET /camera.jpg`: last verified JPEG, only for its owning printer slot and
-  serial. It is never served for another selected printer.
+- `POST /camera/capture`: request one background capture for the shown cloud
+  printer. Requests are coalesced while a capture is already running.
 - `POST /camera/automatic` with form field `enabled=1` or `0`: toggle periodic
-  capture. Sixty seconds between successes, exponential backoff after errors.
+  capture. Five minutes between successes, exponential backoff after errors.
 - `DELETE /camera/credentials`: disable periodic capture and clear this
   feature's separate NVS namespace, without changing MQTT configuration.
 
-Credential loading/NVS access occurs on the main loop before creating the
-PSRAM-stack network worker. The worker only performs signing and network I/O.
+Credential loading/NVS access occurs in the persistent cloud/storage worker.
+The camera worker only receives complete snapshots for signing and network I/O.
 The short HTTPS connection is destroyed before TUTK starts. Images stay in
 PSRAM and are decoded once per generation into a small cached RGB565 sprite.
 No desktop or NAS component is needed after provisioning.

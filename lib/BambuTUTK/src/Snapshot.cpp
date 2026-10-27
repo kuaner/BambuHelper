@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "Snapshot.hpp"
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_json_allocator.h"
+#else
+#define p4JsonAllocator() ArduinoJson::detail::DefaultAllocator::instance()
+#endif
 #include <ArduinoJson.h>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
-#include <mutex>
 #include <thread>
 #if defined(ESP_PLATFORM) || defined(BAMBU_CAMERA_MBEDTLS)
 #include <mbedtls/md.h>
@@ -20,6 +23,31 @@ const char* error_name(Error e){
     case Error::Credentials:return "invalid_application_credentials";
     case Error::Authentication:return "cloud_authentication_failed";
     case Error::Clock:return "clock_not_synced";}
+  return "unknown";
+}
+const char* snapshot_failure_name(SnapshotFailure failure) {
+  switch (failure) {
+    case SnapshotFailure::None: return "none";
+    case SnapshotFailure::Ticket: return "ticket";
+    case SnapshotFailure::FrameLength: return "frame_length";
+    case SnapshotFailure::HeaderLength: return "header_length";
+    case SnapshotFailure::HeaderJson: return "header_json";
+    case SnapshotFailure::ResultMissing: return "result_missing";
+    case SnapshotFailure::RemoteResult: return "remote_result";
+    case SnapshotFailure::ReplyMissing: return "reply_missing";
+    case SnapshotFailure::ImageLimit: return "image_limit";
+    case SnapshotFailure::TotalChanged: return "total_changed";
+    case SnapshotFailure::MetadataLength: return "metadata_length";
+    case SnapshotFailure::MetadataJson: return "metadata_json";
+    case SnapshotFailure::RangeMissing: return "range_missing";
+    case SnapshotFailure::RangeInvalid: return "range_invalid";
+    case SnapshotFailure::DuplicateMismatch: return "duplicate_mismatch";
+    case SnapshotFailure::Gap: return "gap";
+    case SnapshotFailure::EmptyChunk: return "empty_chunk";
+    case SnapshotFailure::FinalLength: return "final_length";
+    case SnapshotFailure::Digest: return "digest";
+    case SnapshotFailure::Jpeg: return "jpeg";
+  }
   return "unknown";
 }
 
@@ -42,51 +70,51 @@ static bool matches_md5(const BambuVector<uint8_t>& bytes,const char* expected){
 
 bool SnapshotDownload::feed(const uint8_t* frame,size_t length){
   if(done_)return error_==Error::None;
-  if(!frame||length==0||length>64*1024)return fail(Error::Protocol);
+  if(!frame||length==0||length>64*1024)return fail(Error::Protocol,SnapshotFailure::FrameLength);
   size_t split=0;
   while(split+1<length&&(frame[split]!='\n'||frame[split+1]!='\n'))++split;
   const bool binary=split+1<length;
   const size_t json_length=binary?split:length;
-  if(json_length>4096)return fail(Error::Protocol);
-  JsonDocument document;
-  if(deserializeJson(document,frame,json_length))return fail(Error::Protocol);
+  if(json_length>4096)return fail(Error::Protocol,SnapshotFailure::HeaderLength);
+  JsonDocument document(p4JsonAllocator());
+  if(deserializeJson(document,frame,json_length))return fail(Error::Protocol,SnapshotFailure::HeaderJson);
   if(!document["cmdtype"].is<uint32_t>()||!document["sequence"].is<uint32_t>())return true;
   if(document["cmdtype"].as<uint32_t>()!=4||document["sequence"].as<uint32_t>()!=sequence_)return true;
-  if(!document["result"].is<int>())return fail(Error::Protocol);
+  if(!document["result"].is<int>())return fail(Error::Protocol,SnapshotFailure::ResultMissing);
   const int result=document["result"].as<int>();
-  if(result!=0&&result!=1)return fail(Error::Protocol);
+  if(result!=0&&result!=1)return fail(Error::Protocol,SnapshotFailure::RemoteResult);
   JsonObjectConst reply=document["reply"].as<JsonObjectConst>();
-  if(reply.isNull())return fail(Error::Protocol);
+  if(reply.isNull())return fail(Error::Protocol,SnapshotFailure::ReplyMissing);
   if(reply["total"].is<uint64_t>()){
     const auto total=reply["total"].as<uint64_t>();
-    if(!total||total>kMaxImage)return fail(Error::TooLarge);
-    if(total_&&total_!=total)return fail(Error::Protocol);
+    if(!total||total>kMaxImage)return fail(Error::TooLarge,SnapshotFailure::ImageLimit);
+    if(total_&&total_!=total)return fail(Error::Protocol,SnapshotFailure::TotalChanged);
     total_=static_cast<size_t>(total);
   }
   const uint8_t* payload=binary?frame+split+2:nullptr;
   size_t available=binary?length-split-2:0;
   if(!reply["mem_dl_param_size"].isNull()){
-    if(!reply["mem_dl_param_size"].is<unsigned>())return fail(Error::Protocol);
+    if(!reply["mem_dl_param_size"].is<unsigned>())return fail(Error::Protocol,SnapshotFailure::MetadataLength);
     const auto metadata=reply["mem_dl_param_size"].as<unsigned>();
-    if(!metadata||metadata>1024||metadata>available)return fail(Error::Protocol);
-    JsonDocument meta;
-    if(deserializeJson(meta,payload,metadata)||!meta["result"].is<int>()||meta["result"].as<int>()!=0)return fail(Error::Protocol);
+    if(!metadata||metadata>1024||metadata>available)return fail(Error::Protocol,SnapshotFailure::MetadataLength);
+    JsonDocument meta(p4JsonAllocator());
+    if(deserializeJson(meta,payload,metadata)||!meta["result"].is<int>()||meta["result"].as<int>()!=0)return fail(Error::Protocol,SnapshotFailure::MetadataJson);
     payload+=metadata;available-=metadata;
   }
   if(available){
-    if(!total_||!reply["offset"].is<uint64_t>()||!reply["size"].is<uint64_t>())return fail(Error::Protocol);
+    if(!total_||!reply["offset"].is<uint64_t>()||!reply["size"].is<uint64_t>())return fail(Error::Protocol,SnapshotFailure::RangeMissing);
     const auto offset=reply["offset"].as<uint64_t>();const auto size=reply["size"].as<uint64_t>();
-    if(size!=available||offset>total_||size>total_-offset)return fail(Error::Protocol);
+    if(size!=available||offset>total_||size>total_-offset)return fail(Error::Protocol,SnapshotFailure::RangeInvalid);
     if(offset<image_.size()){
-      if(size>image_.size()-offset||memcmp(image_.data()+offset,payload,size)!=0)return fail(Error::Protocol);
+      if(size>image_.size()-offset||memcmp(image_.data()+offset,payload,size)!=0)return fail(Error::Protocol,SnapshotFailure::DuplicateMismatch);
     }else if(offset==image_.size()){
       image_.insert(image_.end(),payload,payload+available);
-    }else return fail(Error::Protocol);
-  }else if(reply["size"].is<uint64_t>()&&reply["size"].as<uint64_t>()!=0)return fail(Error::Protocol);
+    }else return fail(Error::Protocol,SnapshotFailure::Gap);
+  }else if(reply["size"].is<uint64_t>()&&reply["size"].as<uint64_t>()!=0)return fail(Error::Protocol,SnapshotFailure::EmptyChunk);
   if(result==0){
-    if(!total_||image_.size()!=total_)return fail(Error::Protocol);
-    if(!matches_md5(image_,reply["file_md5"]|static_cast<const char*>(nullptr)))return fail(Error::Integrity);
-    if(image_.size()<4||image_[0]!=0xff||image_[1]!=0xd8||image_[image_.size()-2]!=0xff||image_.back()!=0xd9)return fail(Error::Integrity);
+    if(!total_||image_.size()!=total_)return fail(Error::Protocol,SnapshotFailure::FinalLength);
+    if(!matches_md5(image_,reply["file_md5"]|static_cast<const char*>(nullptr)))return fail(Error::Integrity,SnapshotFailure::Digest);
+    if(image_.size()<4||image_[0]!=0xff||image_[1]!=0xd8||image_[image_.size()-2]!=0xff||image_.back()!=0xd9)return fail(Error::Integrity,SnapshotFailure::Jpeg);
     done_=true;
   }
   return true;
@@ -98,23 +126,29 @@ std::string snapshot_request(uint32_t sequence){
   return "{\"mtype\":12289,\"cmdtype\":4,\"sequence\":"+n+",\"req\":{\"path\":\"mem:/26\",\"offset\":0,\"mem_dl_param_size\":"+std::to_string(parameters.size())+"}}\n\n"+parameters;
 }
 
-Error capture(const obn::camera::tutk::TutkSessionParams& params,BambuVector<uint8_t>& jpeg,unsigned timeout_ms){
+Error capture(const obn::camera::tutk::TutkSessionParams& params,BambuVector<uint8_t>& jpeg,unsigned timeout_ms,SnapshotFailure* failure){
   using Clock=std::chrono::steady_clock;
-  if(params.uid.size()!=20||params.authkey.size()>32||params.passwd.empty()||params.passwd.size()>256)return Error::Protocol;
-  jpeg.clear();SnapshotDownload transfer;std::mutex mutex;std::condition_variable changed;
+  if(failure)*failure=SnapshotFailure::None;
+  if(params.uid.size()!=20||params.authkey.size()>32||params.passwd.empty()||params.passwd.size()>256){
+    if(failure)*failure=SnapshotFailure::Ticket;return Error::Protocol;
+  }
+  jpeg.clear();SnapshotReceiver transfer;
   const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms);
   obn::camera::tutk::TutkSession session;
   session.join(params,[&](const uint8_t* data,int size,int64_t,bool){
-    std::lock_guard<std::mutex> lock(mutex);
     if(size>0)transfer.feed(data,static_cast<size_t>(size));
-    changed.notify_one();
   },obn::camera::tutk::TutkSession::Mode::Ctrl);
   while(session.is_joined()&&!session.is_ready()&&Clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(20));
   Error result=Error::Connect;
   if(session.is_ready()&&session.send_ctrl(snapshot_request())){
-    std::unique_lock<std::mutex> lock(mutex);
-    changed.wait_until(lock,deadline,[&]{return transfer.done();});
-    result=transfer.done()?transfer.error():Error::Timeout;
+    while(!transfer.done()&&session.is_joined()&&Clock::now()<deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // If the session ended, its final callback happened before joined=false.
+    // Sample completion after that acquire so its final result is not missed.
+    const bool stillJoined=session.is_joined();
+    const bool completed=transfer.done();
+    result=completed?transfer.error():stillJoined?Error::Timeout:Error::Connect;
+    if(completed&&failure)*failure=transfer.failure();
     if(result==Error::None)jpeg=transfer.take();
   }else if(Clock::now()>=deadline)result=Error::Timeout;
   session.leave();return result;

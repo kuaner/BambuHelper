@@ -1,4 +1,5 @@
 #include "led.h"
+#define P4_LEGACY_NO_PANEL_BRIGHTNESS
 #include "settings.h"
 #include "config.h"
 #include <Arduino.h>
@@ -7,6 +8,9 @@
 #include <esp32-hal-rmt.h>
 #endif
 #include <math.h>
+#if defined(BOARD_IS_WS_P4_7B)
+#define saveLedSettings() ((void)0)
+#endif
 
 // ---------------------------------------------------------------------------
 //  Pin attachment + output tracking
@@ -796,10 +800,17 @@ void previewLed(bool enabled, uint8_t driver, uint8_t pinR, uint8_t pinG,
 //  Effect engine
 // ---------------------------------------------------------------------------
 void ledSetActivity(LedActivity act) {
+#if defined(BOARD_IS_WS_P4_7B)
+  (void)act;  // No printer-driven LED automation on the P4 dashboard.
+#else
   currentActivity = act;
+#endif
 }
 
 void ledStartFinishEffect() {
+#if defined(BOARD_IS_WS_P4_7B)
+  return;  // The web test effect uses ledTriggerTestEffect() instead.
+#else
   if (!ledSettings.enabled) return;
   if (ledSettings.finishMode == LED_FINISH_OFF) return;
   if (attachedPin < 0) return;
@@ -810,6 +821,7 @@ void ledStartFinishEffect() {
   finishEffectStartMs = millis();
   finishEffectEndMs   = finishEffectStartMs + (unsigned long)ledSettings.finishSeconds * 1000UL;
   finishEffectActive  = true;
+#endif
 }
 
 void ledStopFinishEffect() {

@@ -27,6 +27,7 @@
 #include "io_expander_tca9554.h"
 #endif
 #include <new>   // placement new for CYD panel variant selection
+#include "p4_tasmota_stub.h"
 
 // --- AMS label formatters (honor gaugeLabels.amsBase override) --------------
 // Centralized so every AMS draw site (grid, bars, sidebar captions, drying,
@@ -175,6 +176,9 @@ static ScreenState currentScreen = SCREEN_SPLASH;
 static ScreenState prevScreen = SCREEN_SPLASH;
 static bool forceRedraw = true;
 static unsigned long lastDisplayUpdate = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+uint32_t p4UiLoopStackMinWords() { return uxTaskGetStackHighWaterMark(nullptr); }
+#endif
 
 // Previous state for smart redraw
 static BambuState prevState;
@@ -767,7 +771,11 @@ static void drawAPMode() {
 #endif
 
   // Title - or, after a failed connect, why it failed (see diagnoseStaFailure)
+#if defined(BOARD_IS_WS_P4_7B)
+  const WifiFailInfo fail = wifiFailureValue();
+#else
   const WifiFailInfo& fail = getWifiFailInfo();
+#endif
   char hint[32] = "";
   switch (fail.kind) {
     case WIFI_FAIL_NOT_FOUND:     strlcpy(hint, "WiFi not found", sizeof(hint)); break;
@@ -886,7 +894,9 @@ static void drawWiFiConnected() {
 
   tft.setTextColor(CLR_TEXT, CLR_BG);
   setFont(tft, LY_F_BODY);
-  tft.drawString(WiFi.localIP().toString().c_str(), midX, midY + LY_SC(40));
+  char ip[16];
+  getWiFiIpText(ip, sizeof(ip));
+  tft.drawString(ip, midX, midY + LY_SC(40));
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,7 +1164,9 @@ static void drawIdleNoPrinter() {
 
   tft.setTextColor(CLR_ORANGE, CLR_BG);
   setFont(tft, LY_F_LARGE);
-  tft.drawString(WiFi.localIP().toString().c_str(), cx, npIpY);
+  char ip[16];
+  getWiFiIpText(ip, sizeof(ip));
+  tft.drawString(ip, cx, npIpY);
 }
 
 // ---------------------------------------------------------------------------
@@ -5491,7 +5503,11 @@ uint8_t getEffectiveBrightness() {
   if (isNightModeActive()) {
     return dpSettings.nightBrightness;
   }
+#if defined(BOARD_IS_WS_P4_7B)
+  return p4UiSettings.brightness;
+#else
   return brightness;
+#endif
 }
 
 void checkNightMode() {
@@ -6286,7 +6302,11 @@ bool screenCaptureBegin(const uint16_t** buf, int16_t* w, int16_t* h) {
   triggerDisplayTransition();
   lastDisplayUpdate = 0;
   updateDisplay();
-  *buf = static_cast<const uint16_t*>(g_shot->getBuffer());
+  // getBuffer() may still be null after an exceptional sprite allocation.
+  // Never report a shot that the caller cannot copy.
+  const uint16_t* pixels = static_cast<const uint16_t*>(g_shot->getBuffer());
+  if (!pixels) { screenCaptureEnd(); return false; }
+  *buf = pixels;
   *w = sw;
   *h = sh;
   return true;

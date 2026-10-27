@@ -1,4 +1,5 @@
 #include "tasmota.h"
+#if !defined(BOARD_IS_WS_P4_7B)
 #include "settings.h"
 #include "wifi_manager.h"
 #include "bambu_mqtt.h"
@@ -14,6 +15,9 @@
 #include <math.h>
 #include <memory>
 #include <new>
+#endif
+
+#if !defined(BOARD_IS_WS_P4_7B)
 
 #define TASMOTA_TIMEOUT_MS              1500
 #define TASMOTA_TIMEOUT_FAST_MS          700
@@ -971,3 +975,4 @@ void tasmotaGetStats(uint8_t plug, TasmotaPlugStatsView* out) {
   out->powerStateKnown = online && g_rt[plug].powerStateKnown;
   out->powerOn         = g_rt[plug].powerOn;
 }
+#endif

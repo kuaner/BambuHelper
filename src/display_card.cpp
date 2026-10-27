@@ -17,6 +17,7 @@
 #include "tasmota.h"         // plug watts / kWh
 #include "battery.h"
 #include "thumb_fetch.h"
+#include "p4_tasmota_stub.h"
 
 // ---------------------------------------------------------------------------
 //  Frame snapshot. Everything the card shows, captured once per tick; the

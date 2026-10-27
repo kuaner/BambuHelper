@@ -1,3 +1,4 @@
+#define P4_SETTINGS_NO_ALIAS
 #include "web_server.h"
 #include <new>
 #include <memory>
@@ -15,6 +16,11 @@
 #include "display_ui.h"
 #include "display_p4.h"
 #include "p4_camera_service.h"
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_runtime.h"
+#include "p4_cloud_worker.h"
+#include "p4_restart_gate.h"
+#endif
 #include "thumb_fetch.h"
 #if defined(BOARD_IS_WS_P4_7B)
 #include <freertos/FreeRTOS.h>
@@ -42,19 +48,152 @@
 #include <HTTPUpdate.h>
 #include "cloud_tls.h"
 #endif
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_cloud_worker.h"
+#include "p4_ui_settings.h"
+#include "p4_json_allocator.h"
+#include <esp_heap_caps.h>
+#define P4_JSON_ALLOCATOR p4JsonAllocator()
+#else
+#define P4_JSON_ALLOCATOR ArduinoJson::detail::DefaultAllocator::instance()
+#endif
+#if defined(BOARD_IS_WS_P4_7B)
+extern P4UiSettings p4Web;
+#define P4_SETTINGS_OWNER p4Web
+#include "p4_legacy_aliases.h"
+#define isPrinterConfigured(slot) p4HttpPrinterConfigured(slot)
+#include "p4_tasmota_stub.h"
+#endif
 
 // Global WebServer instance. Defined here, referenced from src/web_template.cpp
 // via `extern WebServer server;` in include/web_template.h.
 WebServer server(80);
 
+
+#if defined(BOARD_IS_WS_P4_7B)
+P4UiSettings p4Web;
+namespace {
+P4UiSettings webEditBase;
+bool webSettingsDirty = false;
+bool webInitialized = false;
+bool webTaskStarted = false;
+std::atomic<uint32_t> restartAfterSaveMs{0};
+P4RestartGate restartGate;
+uint32_t pendingRestartTicket = 0;
+uint32_t pendingRestartAt = 0;
+P4UiSettings* commitSettings = nullptr;
+
+// The HTTP task owns its private working configuration. Refresh scalar UI
+// fields from committed snapshots, never from live renderer-owned globals.
+void p4WebRefresh() {
+  if (!webSettingsDirty && p4HttpSettingsSnapshot(webEditBase)) {
+    // Keep an in-progress form intact. Commit uses this base to apply only
+    // fields actually edited by the user to the newest stored generation.
+    p4Web = webEditBase;
+  }
+}
+
+void p4WebSyncCommittedBase() {
+  p4HttpSettingsSnapshot(webEditBase);
+}
+
+const P4UiSettings& p4WebCommitSource() { return p4Web; }
+
+bool p4CommitWebSettings(uint32_t restartDelayMs = 0) {
+  // Consume the Wi-Fi handler's one-shot delay before any early return. A
+  // failed or unrelated save must neither cancel nor inherit this request.
+  restartDelayMs += restartAfterSaveMs.exchange(0, std::memory_order_acq_rel);
+  // All form handlers serve this one HTTP task. Apply their edits to the
+  // newest committed generation, including an immediately preceding token.
+  p4WebSyncCommittedBase();
+  if (!commitSettings) {
+    commitSettings = static_cast<P4UiSettings*>(heap_caps_calloc(1, sizeof(P4UiSettings),
+                                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!commitSettings) return false;
+  }
+  const P4UiSettings& value = p4WebCommitSource();
+  *commitSettings = value;
+  const uint32_t ticket = p4WebArmRestart();
+  if (!p4CloudSaveSettings(webEditBase, *commitSettings, ticket, restartDelayMs) ||
+      !p4WebAwaitStorage(ticket, restartDelayMs)) {
+    p4WebCancelRestart(ticket);
+    return false;
+  }
+  webEditBase = *commitSettings;
+  p4Web = *commitSettings;
+  webSettingsDirty = false;
+  return true;
+}
+}
+
+void p4WebInitialize(const P4UiSettings& settings) {
+  p4Web = settings;
+  webEditBase = settings;
+}
+
+static bool saveWebSettings() {
+#if defined(BOARD_IS_WS_P4_7B)
+  webSettingsDirty = true;
+  return p4CommitWebSettings();
+#else
+  return true;
+#endif
+}
+static bool saveWebPrinterConfig(uint8_t) { return saveWebSettings(); }
+
+// The HTTP task never touches the renderer, NVS or another worker's sockets.
+#define applyDisplaySettings() p4UiRepaint()
+#define triggerDisplayTransition() p4UiRepaint()
+#define setBacklight(value) p4UiPreviewBrightness(value)
+#define getScreenState() p4WebScreenState()
+#define isNightBlackout() p4WebNightBlackout()
+#define buzzerPlay(event) p4UiBuzzer(uint8_t(event))
+#define previewLed(en, drv, r, g, b, anode, br, color) ((void)0)
+#define ledTriggerTestEffect(mode, seconds, bright, color) p4UiTestLed(P4LedEffect{mode, seconds, bright, color})
+#define initButton() ((void)0)
+#define initBuzzer() ((void)0)
+#define initLed() ((void)0)
+#define resetClock() ((void)0)
+#define setScreenState(state) p4UiSetScreen(uint8_t(state))
+#define glowDismiss() ((void)0)
+#define glowStartTest(slot) p4UiRepaint()
+#define saveBatteryIndicatorSetting() saveWebSettings()
+#define resetPongClock() ((void)0)
+#define saveSettings() saveWebSettings()
+#define savePrinterConfig(slot) saveWebPrinterConfig(slot)
+#define saveRotationSettings() saveWebSettings()
+#define saveButtonSettings() saveWebSettings()
+#define saveBuzzerSettings() saveWebSettings()
+#define saveLedSettings() saveWebSettings()
+#define sanitizeLedPin() ((void)0)
+#define getNvsUsage(used, free, total) p4CloudStorageUsage(used, free, total)
+#define loadSlotVersionNote(label, buf, size) p4CloudSlotVersion(label, buf, size)
+#define saveAndRestart(delay) p4CommitWebSettings(delay)
+#define tasmotaInit() ((void)0)
+#define configTzTime(...) p4WifiRefreshTime()
+#define tasmotaSetPower(...) false
+#define tasmotaGetStats(...) ((void)0)
+#define tasmotaControlPlugForSlot(...) 0xFF
+#define tasmotaPlugForPrinterSlot(...) 0xFF
+#define tasmotaConfiguredForSlot(...) false
+#endif
+
 // ---------------------------------------------------------------------------
 //  Deferred restart — avoids blocking delay() before ESP.restart()
 // ---------------------------------------------------------------------------
+#if defined(BOARD_IS_WS_P4_7B)
+static void scheduleRestart(unsigned long delayMs = 1000) {
+  const uint32_t ticket = p4WebArmRestart();
+  p4WebFinishRestart(ticket, true);  // No NVS generation for explicit reboot/OTA.
+  p4WebRequestRestart(delayMs);
+}
+#else
 static unsigned long pendingRestartAt = 0;
 
 static void scheduleRestart(unsigned long delayMs = 1000) {
   pendingRestartAt = millis() + delayMs;
 }
+#endif
 
 // ---------------------------------------------------------------------------
 //  PROGMEM page strings (PAGE_HTML, PAGE_AP_HTML) and the template streamer
@@ -86,7 +225,7 @@ static void readGaugeLabelFromForm(const char* arg, char* dst, size_t len) {
 //  Read display settings from form args
 // ---------------------------------------------------------------------------
 static void readDisplayFromForm() {
-  if (server.hasArg("bright")) brightness = server.arg("bright").toInt();
+  if (server.hasArg("bright")) p4PanelBrightness = server.arg("bright").toInt();
   // Night mode
   dpSettings.nightModeEnabled = server.hasArg("nighten");
   if (server.hasArg("nstart")) dpSettings.nightStartHour = server.arg("nstart").toInt();
@@ -279,6 +418,7 @@ static void handleSavePrinter() {
 #endif
 
   PrinterConfig& cfg = printers[slot].config;
+  webSettingsDirty = true;
   if (server.hasArg("connmode")) {
     String cm = server.arg("connmode");
     if (cm == "cloud_all") cfg.mode = CONN_CLOUD_ALL;
@@ -299,15 +439,29 @@ static void handleSavePrinter() {
     if (server.hasArg("pname")) { strlcpy(cfg.name, server.arg("pname").c_str(), sizeof(cfg.name)); utf8TrimPartial(cfg.name); }
     // Save token if provided
     if (server.hasArg("token") && server.arg("token").length() > 0) {
+#if defined(BOARD_IS_WS_P4_7B)
+      String token = server.arg("token");
+      // The token and settings share one ordered storage queue. Any later
+      // user-id enrichment keeps the token-change invalidation.
+      tokenStoreFailed = !p4CloudSaveToken(token.c_str());
+      // Token commit also enriches cloudUserId. Merge this form against that
+      // committed generation instead of writing the old account's id back.
+      if (!tokenStoreFailed) p4WebSyncCommittedBase();
+#else
       tokenStoreFailed = !saveCloudToken(server.arg("token").c_str());
+#endif
     }
-    // Extract userId from stored token
+    // Extract locally on P4; any API fallback belongs to the cloud worker.
+#if defined(BOARD_IS_WS_P4_7B)
+    // The storage owner resolves a missing id after saving the complete form.
+#else
     char tokenBuf[1200];
     if (loadCloudToken(tokenBuf, sizeof(tokenBuf))) {
       if (!cloudExtractUserId(tokenBuf, cfg.cloudUserId, sizeof(cfg.cloudUserId))) {
         cloudFetchUserId(tokenBuf, cfg.cloudUserId, sizeof(cfg.cloudUserId), cfg.region);
       }
     }
+#endif
   } else {
     if (server.hasArg("pname")) { strlcpy(cfg.name, server.arg("pname").c_str(), sizeof(cfg.name)); utf8TrimPartial(cfg.name); }
     if (server.hasArg("ip"))     strlcpy(cfg.ip, server.arg("ip").c_str(), sizeof(cfg.ip));
@@ -318,23 +472,20 @@ static void handleSavePrinter() {
   // Serial numbers must be uppercase (Bambu MQTT topics are case-sensitive)
   for (char* p = cfg.serial; *p; p++) *p = toupper(*p);
 
-  // Validate required fields and build warnings
+  // Validate required fields and build warnings. Queued user-id enrichment is
+  // asynchronous on P4, so it is not reported as a completed cloud login.
   String warnings = "";
   if (tokenStoreFailed) {
-    // The write itself failed (full or fragmented NVS) - without this line the
-    // portal keeps saying "No token set" however often the user pastes, with
-    // nothing to explain why.
-    uint16_t u, f, t;
-    getNvsUsage(u, f, t);
-    warnings += "The cloud token could not be stored - settings storage is full (" +
-                String(u) + " of " + String(t) +
-                " entries used). Export settings, factory-reset, re-import, then paste the token again. ";
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
   }
   if (isCloudMode(cfg.mode)) {
     if (strlen(cfg.serial) == 0)
       warnings += "Serial number is required for cloud mode. ";
-    if (strlen(cfg.cloudUserId) == 0 && !tokenStoreFailed)
+#if !defined(BOARD_IS_WS_P4_7B)
+    if (strlen(cfg.cloudUserId) == 0)
       warnings += "Cloud token is missing or invalid (userId extraction failed). ";
+#endif
   } else {
     if (strlen(cfg.ip) == 0)
       warnings += "Printer IP address is required. ";
@@ -346,11 +497,17 @@ static void handleSavePrinter() {
       warnings += "Access code should be 8 characters (check printer LCD). ";
   }
 
-  savePrinterConfig(slot);
+  const bool queued = savePrinterConfig(slot);
+  if (!queued) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
 
+#if !defined(BOARD_IS_WS_P4_7B)
   // Reinit only the edited slot - the other printer's connection and live
   // display state stay untouched.
   initBambuMqttSlot(slot);
+#endif
 
   if (warnings.length() > 0) {
     String resp = "{\"status\":\"ok\",\"warning\":\"" + warnings + "\"}";
@@ -365,6 +522,22 @@ static void handleSavePrinter() {
 // this there is no way to fully vacate a slot: the access code and token
 // fields are password-style and only saved when non-empty.
 static void handleClearPrinter() {
+#if defined(BOARD_IS_WS_P4_7B)
+  webSettingsDirty = true;
+  ssdpStopScan();
+  uint8_t slot = server.hasArg("slot") ? server.arg("slot").toInt() : 0;
+  if (slot >= MAX_ACTIVE_PRINTERS) slot = 0;
+  resetPrinterConfig(printers[slot].config);
+  // Commit the empty configuration first. The storage publication reconfigures
+  // MQTT, so no old-account connection can be reopened by this HTTP handler.
+  if (!saveSettings()) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
+  return;
+#else
+  webSettingsDirty = true;
   ssdpStopScan();
 
   uint8_t slot = 0;
@@ -381,12 +554,17 @@ static void handleClearPrinter() {
   if (rotState.splitIndexB == slot || rotState.splitIndexB >= MAX_ACTIVE_PRINTERS) {
     rotState.splitIndexB = (rotState.displayIndex == 0) ? 1 : 0;
   }
-
+  if (!saveSettings()) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
+#endif
 }
 
 // Save gauge layout only (no MQTT reinit needed)
 static void handleSaveGaugeLayout() {
+  webSettingsDirty = true;
   uint8_t slot = 0;
   if (server.hasArg("slot")) slot = server.arg("slot").toInt();
   if (slot >= MAX_ACTIVE_PRINTERS) slot = 0;
@@ -427,12 +605,16 @@ static void handleSaveGaugeLayout() {
   }
   cfg.amsView = server.hasArg("amsv");
 
-  savePrinterConfig(slot);
+  if (!savePrinterConfig(slot)) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 // Save WiFi + network settings (requires restart)
 static void handleSaveWifi() {
+  webSettingsDirty = true;
   if (server.hasArg("ssid")) strlcpy(wifiSSID, server.arg("ssid").c_str(), sizeof(wifiSSID));
   if (server.hasArg("pass") && server.arg("pass").length() > 0) strlcpy(wifiPass, server.arg("pass").c_str(), sizeof(wifiPass));
 
@@ -452,10 +634,23 @@ static void handleSaveWifi() {
                        sizeof(netSettings.hostname));
   }
 
+#if defined(BOARD_IS_WS_P4_7B)
+  // This is the commit which arms the deferred restart. The cloud/storage
+  // owner saves this exact generation first, then schedules the reboot.
+  restartAfterSaveMs.store(1000, std::memory_order_release);
+  const bool queued = p4CommitWebSettings();
+#else
   saveSettings();
-
+  const bool queued = true;
+#endif
+  if (!queued) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage is unavailable.\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
+#if !defined(BOARD_IS_WS_P4_7B)
   scheduleRestart();
+#endif
 }
 
 // Live brightness preview (no save, just PWM update)
@@ -469,7 +664,10 @@ static void handleBrightnessPreview() {
     // deliberately dark and checkNightMode() would stamp the preview back out
     // within a second anyway, so the slider would only flicker the screen.
     if (scr != SCREEN_CLOCK && scr != SCREEN_OFF && !isNightBlackout()) {
-      setBacklight(val);
+      if (!p4UiPreviewBrightness(val)) {
+        server.send(503, "text/plain", "UI command queue is unavailable");
+        return;
+      }
     }
   }
   server.send(200, "text/plain", "OK");
@@ -477,15 +675,24 @@ static void handleBrightnessPreview() {
 
 // Apply display settings live (no restart)
 static void handleApply() {
+  webSettingsDirty = true;
   // Snapshot timezone before parsing — only re-init NTP if it changes.
   // configTzTime() resets the SNTP sync status, which causes getLocalTime()
   // to return false for up to 60s, blanking the clock screen unnecessarily.
   char prevTz[sizeof(netSettings.timezoneStr)];
   strlcpy(prevTz, netSettings.timezoneStr, sizeof(prevTz));
   readDisplayFromForm();
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!p4CommitWebSettings()) {
+    server.send(503, "text/plain", "Settings storage unavailable");
+    return;
+  }
+#else
   saveSettings();
+#endif
   applyDisplaySettings();
   if (strcmp(netSettings.timezoneStr, prevTz) != 0) {
+    // P4 queues this timezone with the settings; the Wi-Fi owner applies it.
     configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
   }
   server.send(200, "text/plain", "OK");
@@ -502,8 +709,11 @@ static void handleStatus() {
   if (slot >= MAX_PRINTERS) slot = 0;
 
   BambuState& st = printers[slot].state;
+#if defined(BOARD_IS_WS_P4_7B)
+  p4HttpPrinterSnapshot(slot, printers[slot].config, st);
+#endif
 
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   // Per-printer (driven by ?slot=)
   doc["connected"] = st.connected;
   doc["configured"] = isPrinterConfigured(slot);
@@ -572,9 +782,17 @@ static void handleStatus() {
   // Device-wide (new design's Detected Hardware + WiFi live KV)
   doc["heap_kb"] = ESP.getFreeHeap() / 1024;
   doc["uptime"] = (uint32_t)(millis() / 1000);
+  P4NetworkStatus network{};
+#if defined(BOARD_IS_WS_P4_7B)
+  p4HttpNetworkSnapshot(network);
+  doc["rssi"] = network.rssi;
+  doc["ip"] = network.ip;
+  doc["mac"] = "";
+#else
   doc["rssi"] = WiFi.RSSI();
   doc["ip"] = WiFi.localIP().toString();
   doc["mac"] = WiFi.macAddress();
+#endif
   doc["board"] = BOARD_VARIANT;   // which build this is, for remote diagnosis
   doc["flash_kb"] = ESP.getFlashChipSize() / 1024;
 #if defined(BOARD_HAS_PSRAM) || defined(CONFIG_SPIRAM_SUPPORT)
@@ -623,11 +841,20 @@ static void handleTimezones() {
 }
 
 static void handleReset() {
+#if defined(BOARD_IS_WS_P4_7B)
+  if (!p4CloudFactoryReset()) {
+    server.send(503, "text/plain", "Factory reset could not be stored; the device has not been restarted");
+    return;
+  }
+  server.send(202, "text/html",
+    "<html><body style='background:#0D1117;color:#E6EDF3;text-align:center;padding-top:80px;font-family:sans-serif'>"
+    "<h2 style='color:#F85149'>Factory Reset</h2><p>Reset queued.</p></body></html>");
+#else
   server.send(200, "text/html",
     "<html><body style='background:#0D1117;color:#E6EDF3;text-align:center;padding-top:80px;font-family:sans-serif'>"
-    "<h2 style='color:#F85149'>Factory Reset</h2>"
-    "<p>Restarting...</p></body></html>");
-  resetSettings();  // clears NVS and calls ESP.restart()
+    "<h2 style='color:#F85149'>Factory Reset</h2><p>Restarting...</p></body></html>");
+  resetSettings();
+#endif
 }
 
 // Why the chip last booted - tells a brownout from a panic from an OTA reboot.
@@ -648,7 +875,7 @@ static const char* resetReasonText(esp_reset_reason_t r) {
 }
 
 static void handleDebug() {
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   unsigned long now = millis();
 
   JsonArray arr = doc["printers"].to<JsonArray>();
@@ -656,6 +883,9 @@ static void handleDebug() {
     if (!isPrinterConfigured(i)) continue;
     const MqttDiag d = getMqttDiag(i);
     BambuState& st = printers[i].state;
+#if defined(BOARD_IS_WS_P4_7B)
+    p4HttpPrinterSnapshot(i, printers[i].config, st);
+#endif
     JsonObject p = arr.add<JsonObject>();
     p["slot"] = i;
     p["name"] = printers[i].config.name;
@@ -757,24 +987,32 @@ static void handleDebug() {
   doc["heap"] = ESP.getFreeHeap();
   doc["uptime"] = millis() / 1000;
   doc["reset_reason"] = resetReasonText(esp_reset_reason());
+#if defined(BOARD_IS_WS_P4_7B)
+  P4NetworkStatus network{}; p4HttpNetworkSnapshot(network);
+  doc["rssi"] = network.rssi;
+#else
   doc["rssi"] = WiFi.RSSI();
+#endif
   doc["debug_log"] = mqttDebugLog;
 #if defined(BOARD_IS_WS_P4_7B)
-  const TouchDiagnostics td = touchDiagnostics();
+  TouchDiagnostics td{}; TouchContact contact{};
+  p4HttpTouchSnapshot(td, contact);
   JsonObject touch = doc["touch"].to<JsonObject>();
   touch["ready"] = td.ready;
   touch["down"] = td.down;
   touch["frames"] = td.frames;
   touch["presses"] = td.presses;
   touch["read_errors"] = td.readErrors;
-  const TouchContact contact = touchContact();
+
   touch["valid"] = contact.valid;
   touch["x"] = contact.x;
   touch["y"] = contact.y;
-  doc["p4_dashboard"] = p4DashboardActive();
-  doc["p4_page"] = p4DashboardPage();
-  doc["p4_ams_page"] = p4DashboardAmsPage();
-  doc["p4_image"] = "printer";
+  P4UiStatus ui{};
+  p4HttpUiSnapshot(ui);
+  doc["p4_dashboard"] = ui.dashboard;
+  doc["p4_page"] = ui.page;
+  doc["p4_ams_page"] = ui.amsPage;
+  doc["p4_image"] = ui.cameraImage ? "camera" : "printer";
   const ThumbDiagnostics thumb = thumbDiagnostics(rotState.displayIndex);
   JsonObject image = doc["thumbnail"].to<JsonObject>();
   image["ready"] = thumb.ready;
@@ -788,7 +1026,7 @@ static void handleDebug() {
   doc["cloud_images"] = false;
   doc["free_psram"] = ESP.getFreePsram();
   doc["min_heap"] = ESP.getMinFreeHeap();
-  doc["loop_stack_min_bytes"] = uxTaskGetStackHighWaterMark(nullptr);
+  doc["loop_stack_min_bytes"] = uint32_t(ui.loopStackMin) * sizeof(StackType_t);
   doc["screen"] = getScreenState() == SCREEN_AMS ? "ams" : "status";
 #endif
   {
@@ -882,27 +1120,41 @@ static void sendRgb565Bmp(const uint16_t* buf, int16_t w, int16_t h, int16_t ban
 
 // Last Card frame.
 static void handleCardBmp() {
-  const uint16_t* buf; int16_t w, h, bandH = 0;
-  if (cardFrameView(&buf, &w, &h)) {
-    sendRgb565Bmp(buf, w, h, 0);
-  } else if (cardBandView(0, &buf, &w, &bandH, &h)) {
-    // Band-render board: re-render the last frame band by band, bottom-up.
-    sendRgb565Bmp(buf, w, h, bandH);
+  const uint16_t* buf = nullptr; int w = 0, h = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+  if (p4UiCopyFrame(buf, w, h)) sendRgb565Bmp(buf, w, h, 0);
+  else server.send(503, "text/plain", "Screen snapshot not ready");
+#else
+  int16_t sw = 0, sh = 0, bandH = 0;
+  if (cardFrameView(&buf, &sw, &sh)) {
+    sendRgb565Bmp(buf, sw, sh, 0);
+  } else if (cardBandView(0, &buf, &sw, &bandH, &sh)) {
+    sendRgb565Bmp(buf, sw, sh, bandH);
   } else {
     server.send(404, "text/plain", "No Card frame (Card style off)");
   }
-  cardBandRelease();   // band boards: the band sprite holds DMA-capable RAM
+  cardBandRelease();
+#endif
 }
 
 // Whatever screen is up (gauges, clock, Card...), re-rendered into PSRAM.
 static void handleScreenBmp() {
-  const uint16_t* buf; int16_t w, h;
-  if (!screenCaptureBegin(&buf, &w, &h)) {
+#if defined(BOARD_IS_WS_P4_7B)
+  const uint32_t request = p4UiRequestFrame();
+  // Only the HTTP task waits; rendering, touch, MQTT and camera stay free.
+  for (unsigned i = 0; request && !p4UiFrameReady(request) && i < 250; ++i)
+    vTaskDelay(pdMS_TO_TICKS(2));
+  if (request && !p4UiFrameReady(request)) {
+    server.send(503, "text/plain", "Screen snapshot is not ready; retry without using an older frame");
+    return;
+  }
+#endif
+  const uint16_t* buf = nullptr; int w = 0, h = 0;
+  if (!p4UiCopyFrame(buf, w, h)) {
     server.send(503, "text/plain", "Screenshot needs free PSRAM (not on a power-confirm screen)");
     return;
   }
   sendRgb565Bmp(buf, w, h, 0);
-  screenCaptureEnd();
 }
 
 static void handleDebugToggle() {
@@ -913,6 +1165,7 @@ static void handleDebugToggle() {
 }
 
 static void handleToggleSetting() {
+  webSettingsDirty = true;
   if (!server.hasArg("key") || !server.hasArg("val")) {
     server.send(400, "text/plain", "Missing key/val");
     return;
@@ -988,7 +1241,10 @@ static void handleToggleSetting() {
     return;
   }
 
-  saveSettings();
+  if (!saveSettings()) {
+    server.send(503, "text/plain", "Settings storage unavailable");
+    return;
+  }
   // "fintm" joins these because it rewrites text already on screen: the finish
   // headline is painted only under forceRedraw, so without a re-render the
   // toggle would appear to do nothing until the next print.
@@ -996,8 +1252,12 @@ static void handleToggleSetting() {
   // says without any printer state moving, and every badge site is cached.
   if (key == "invcol" || key == "slbl" || key == "abar" || key == "timem" ||
       key == "fintm" || key == "hmsen" || key == "hmssev") applyDisplaySettings();
-  if (key == "cydcls") scheduleRestart(800);  // panel swap needs a fresh init
-  if (key == "cyd32e") scheduleRestart(800);  // re-init amp enable + RGB pins cleanly
+#if defined(BOARD_IS_WS_P4_7B)
+  if (key == "cydcls" || key == "cyd32e") p4WebRequestRestart(800);
+#else
+  if (key == "cydcls") scheduleRestart(800);
+  if (key == "cyd32e") scheduleRestart(800);
+#endif
   if (key == "rskin") triggerDisplayTransition();  // repaint print dashboard with the new skin
   if (key == "card" || key == "cleft" || key == "cbot" || key == "cready") triggerDisplayTransition();
   if (key == "use24h") { resetClock(); resetPongClock(); triggerDisplayTransition(); }
@@ -1043,6 +1303,66 @@ static void handleToggleSetting() {
   server.send(200, "text/plain", "OK");
 }
 
+#if defined(BOARD_IS_WS_P4_7B)
+static void sendP4CloudStatus() {
+  JsonDocument doc(P4_JSON_ALLOCATOR);
+  p4CloudStatusJson(doc);
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+static void handleCloudPrinters() {
+  CloudRegion region = printers[0].config.region;
+  if (server.hasArg("region")) {
+    const String value = server.arg("region");
+    region = value == "cn" ? REGION_CN : value == "eu" ? REGION_EU : REGION_US;
+  }
+  if (!p4CloudStartPrinters(region)) {
+    sendP4CloudStatus();
+    return;
+  }
+  sendP4CloudStatus();
+}
+static void handleCloudDiagnostics() {
+  if (!p4CloudStartDiagnostics(printers[0].config.region)) {
+    sendP4CloudStatus();
+    return;
+  }
+  sendP4CloudStatus();
+}
+#if HAS_CLOUD_LOGIN
+static void handleCloudLoginStart() {
+  String email = server.arg("email"); email.trim();
+  const String password = server.arg("password");
+  const bool emailCode = server.arg("mode") == "code";
+  String error;
+  if (!email.length() || email.length() > CLOUD_EMAIL_MAX ||
+      (!emailCode && !password.length()) || password.length() > CLOUD_PASSWORD_MAX) {
+    server.send(400, "application/json", "{\"state\":\"failed\",\"message\":\"Invalid email or password length.\"}");
+    return;
+  }
+  if (!p4CloudStartLogin(email.c_str(), password.c_str(), server.arg("save") == "1", emailCode, error)) {
+    sendP4CloudStatus();
+    return;
+  }
+  sendP4CloudStatus();
+}
+static void handleCloudLoginCode() {
+  if (!p4CloudSubmitCode(server.arg("code").c_str())) {
+    sendP4CloudStatus();
+    return;
+  }
+  sendP4CloudStatus();
+}
+static void handleCloudSelfTest() {
+  if (!p4CloudStartSelfTest()) {
+    sendP4CloudStatus();
+    return;
+  }
+  sendP4CloudStatus();
+}
+#endif
+#endif
+
 // ---------------------------------------------------------------------------
 //  Static portal assets
 //
@@ -1064,17 +1384,22 @@ static void handleAppCss() { sendGzipAsset("text/css", WEB_APP_CSS_GZ, WEB_APP_C
 static void handleAppJs()  { sendGzipAsset("application/javascript", WEB_APP_JS_GZ, WEB_APP_JS_GZ_LEN); }
 
 static void handleCloudLogout() {
+#if defined(BOARD_IS_WS_P4_7B)
+  p4CloudLogout();
+#else
   clearCloudToken();
   // NVS is only half of it: the sign-in module still holds the live site
   // session cookie, the 2FA challenge and a state that answers "Signed in."
   // until the next reboot.
   cloudLoginReset();
+#endif
   server.send(200, "text/plain", "OK");
 }
 
 // List the printers bound to the stored token's account, so the portal can
 // offer a picker instead of a serial the user has to transcribe. Available with
 // a pasted token too, not only after an on-device sign-in.
+#if !defined(BOARD_IS_WS_P4_7B)
 static void handleCloudPrinters() {
   char token[1200];
   if (!loadCloudToken(token, sizeof(token))) {
@@ -1098,21 +1423,21 @@ static void handleCloudPrinters() {
 
   // The bind payload carries far more per device than the picker needs, and a
   // busy account can make it big, so only the four fields are parsed out.
-  JsonDocument filter;
+  JsonDocument filter(P4_JSON_ALLOCATOR);
   filter["devices"][0]["dev_id"] = true;
   filter["devices"][0]["name"] = true;
   filter["devices"][0]["dev_product_name"] = true;
   filter["devices"][0]["dev_model_name"] = true;
   filter["devices"][0]["online"] = true;
 
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   if (deserializeJson(doc, response, DeserializationOption::Filter(filter))) {
     server.send(200, "application/json",
                 "{\"printers\":[],\"message\":\"Could not read the account's printer list.\"}");
     return;
   }
 
-  JsonDocument out;
+  JsonDocument out(P4_JSON_ALLOCATOR);
   JsonArray arr = out["printers"].to<JsonArray>();
   for (JsonObject dev : doc["devices"].as<JsonArray>()) {
     const char* serial = dev["dev_id"];
@@ -1131,14 +1456,9 @@ static void handleCloudPrinters() {
   serializeJson(out, body);
   server.send(200, "application/json", body);
 }
-
-#if defined(BOARD_IS_WS_P4_7B)
-static void handleCloudDiagnostics() {
-  String result;
-  cloudDiagnostics(printers[0].config.region, result);
-  server.send(200, "application/json", result);
-}
 #endif
+
+
 
 #if HAS_CLOUD_LOGIN
 
@@ -1169,17 +1489,19 @@ static const char* cloudLoginStateName() {
 }
 
 static void sendCloudLoginState() {
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["state"]   = cloudLoginStateName();
   doc["message"] = cloudLoginMessage();
   doc["failed"]  = cloudLoginLastFailed();
 
-  char email[96];
+  char email[CLOUD_EMAIL_MAX + 1]{};
+  char token[CLOUD_TOKEN_MAX]{};
+  char password[CLOUD_PASSWORD_MAX + 1]{};
   doc["email"] = loadCloudEmail(email, sizeof(email)) ? email : "";
-  doc["saved_password"] = cloudLoginCanAutoRefresh();
-
-  char token[1200];
+  doc["saved_password"] = loadCloudPassword(password, sizeof(password));
   doc["has_token"] = loadCloudToken(token, sizeof(token));
+  memset(password, 0, sizeof(password));
+  memset(token, 0, sizeof(token));
 
   String out;
   serializeJson(doc, out);
@@ -1191,7 +1513,7 @@ static void sendCloudLoginState() {
 // AND the account signed in without a second factor - a stored password is
 // useless for silent refresh otherwise.
 static void sendCloudLoginError(const char* message) {
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["state"]   = "failed";
   doc["failed"]  = true;
   doc["message"] = message;
@@ -1200,6 +1522,7 @@ static void sendCloudLoginError(const char* message) {
   server.send(200, "application/json", out);
 }
 
+#if !defined(BOARD_IS_WS_P4_7B)
 static void handleCloudLoginStart() {
   String email = server.arg("email");
   email.trim();
@@ -1246,8 +1569,10 @@ static void handleCloudLoginStart() {
   }
   sendCloudLoginState();
 }
+#endif
 
 // Step 2: the authenticator code or the emailed one, whichever is pending.
+#if !defined(BOARD_IS_WS_P4_7B)
 static void handleCloudLoginCode() {
   String code = server.arg("code");
   code.trim();
@@ -1260,13 +1585,19 @@ static void handleCloudLoginCode() {
   if (cloudLoginState() == CLOUD_LOGIN_OK) refreshCloudUserIds();
   sendCloudLoginState();
 }
+#endif
 
 static void handleCloudLoginStatus() {
+#if defined(BOARD_IS_WS_P4_7B)
+  sendP4CloudStatus();
+#else
   sendCloudLoginState();
+#endif
 }
 
 // Reachability check for support: proves whether this device can talk to the
 // Bambu sign-in service, using throwaway credentials only.
+#if !defined(BOARD_IS_WS_P4_7B)
 static void handleCloudSelfTest() {
   String result;
   cloudLoginSelfTest(result);
@@ -1274,6 +1605,7 @@ static void handleCloudSelfTest() {
   Serial.println(result);
   server.send(200, "application/json", result);
 }
+#endif
 
 #endif // HAS_CLOUD_LOGIN
 
@@ -1320,8 +1652,11 @@ static void handlePrinterConfig() {
 
   PrinterConfig& cfg = printers[slot].config;
   BambuState& st = printers[slot].state;
+#if defined(BOARD_IS_WS_P4_7B)
+  p4HttpPrinterSnapshot(slot, cfg, st);
+#endif
 
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["mode"] = isCloudMode(cfg.mode) ? "cloud_all" : "local";
   doc["name"] = cfg.name;
   doc["ip"] = cfg.ip;
@@ -1371,6 +1706,7 @@ static void handlePrinterConfig() {
 
 // Save chamber-light automation settings (no MQTT reinit - mirrors gauge layout)
 static void handleLightConfig() {
+  webSettingsDirty = true;
   uint8_t slot = 0;
   if (server.hasArg("slot")) slot = server.arg("slot").toInt();
   if (slot >= MAX_ACTIVE_PRINTERS) slot = 0;
@@ -1389,7 +1725,10 @@ static void handleLightConfig() {
   if (!(flags & (LIGHT_OFF_ON_FINISH | LIGHT_OFF_ON_FAILED)))
     printers[slot].state.lightOffDueMs = 0;
 
-  savePrinterConfig(slot);
+  if (!savePrinterConfig(slot)) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -1415,8 +1754,11 @@ static void handleLightSet() {
 static void handleBuzzerTest() {
   uint8_t snd = 0;
   if (server.hasArg("sound")) snd = server.arg("sound").toInt();
-  if (snd <= 2) buzzerPlay((BuzzerEvent)snd);
-  else if (snd == 4) buzzerPlay(BUZZ_BED_COOLDOWN);
+  const bool valid = snd <= 2 || snd == 4;
+  if (valid && !p4UiBuzzer(snd)) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"UI command queue is unavailable\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -1435,6 +1777,9 @@ static uint32_t ledColorArg(const char *arg, uint32_t fallback) {
 // uint8_t (avoids 300 -> 44 wraparound). On invalid pin we shut the preview
 // off so the user doesn't see a "ghost" LED still lit on the previous pin.
 static void handleLedPreview() {
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(409, "application/json", "{\"error\":\"LED preview is disabled on the P4 dashboard\"}");
+#else
   bool en = server.hasArg("en") ? (server.arg("en") == "1") : ledSettings.enabled;
 
   uint8_t drv = ledSettings.driver;
@@ -1470,6 +1815,7 @@ static void handleLedPreview() {
 
   previewLed(en, drv, (uint8_t)rawPin, (uint8_t)rawG, (uint8_t)rawB, anode, br, col);
   server.send(200, "application/json", "{\"status\":\"ok\"}");
+#endif
 }
 
 // Trigger the chosen finish effect for a short window without waiting for a
@@ -1478,6 +1824,9 @@ static void handleLedPreview() {
 // has the pin attached and should be testable. ledTriggerTestEffect() reports
 // whether it actually started so we can return a meaningful error.
 static void handleLedTest() {
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(409, "application/json", "{\"error\":\"LED automation is disabled on the P4 dashboard\"}");
+#else
   uint8_t md = ledSettings.finishMode;
   if (server.hasArg("md")) {
     int v = server.arg("md").toInt();
@@ -1510,10 +1859,12 @@ static void handleLedTest() {
     return;
   }
   server.send(200, "application/json", "{\"status\":\"ok\"}");
+#endif
 }
 
 // Save rotation settings (multi-printer)
 static void handleSaveRotation() {
+  webSettingsDirty = true;
   if (server.hasArg("rotmode")) {
     uint8_t mode = server.arg("rotmode").toInt();
     if (mode <= 2) rotState.mode = (RotateMode)mode;
@@ -1531,10 +1882,16 @@ static void handleSaveRotation() {
   if (server.hasArg("rotsplitf")) {
     rotState.splitForce = (server.arg("rotsplitf") == "1");
   }
+#if !defined(BOARD_IS_WS_P4_7B)
   saveRotationSettings();
+#endif
 
   // Rotation-only save (Printer section): leave the peripherals alone.
   if (!server.hasArg("btntype")) {
+    if (!saveWebSettings()) {
+      server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+      return;
+    }
     server.send(200, "application/json", "{\"status\":\"ok\"}");
     return;
   }
@@ -1548,7 +1905,9 @@ static void handleSaveRotation() {
     uint8_t bp = server.arg("btnpin").toInt();
     if (bp > 0 && bp <= 48) buttonPin = bp;
   }
+#if !defined(BOARD_IS_WS_P4_7B)
   saveButtonSettings();
+#endif
   initButton();
 
   // Buzzer settings
@@ -1579,7 +1938,9 @@ static void handleSaveRotation() {
     if (t > 80) t = 80;
     buzzerSettings.bedCooldownThresholdC = (uint8_t)t;
   }
+#if !defined(BOARD_IS_WS_P4_7B)
   saveBuzzerSettings();
+#endif
   initBuzzer();
 
   // Battery indicator visibility (Waveshare boards). Always parse so the
@@ -1587,7 +1948,9 @@ static void handleSaveRotation() {
   // saveHardware() JS sends an explicit 0/1 to work around that).
   if (server.hasArg("batshow")) {
     dispSettings.showBatteryIndicator = (server.arg("batshow") == "1");
+#if !defined(BOARD_IS_WS_P4_7B)
     saveBatteryIndicatorSetting();
+#endif
   }
 
   // Status LED — must be parsed AFTER button + buzzer so sanitizeLedPin()
@@ -1646,7 +2009,10 @@ static void handleSaveRotation() {
     if (v != 0 && v < 5) v = 5; if (v > 600) v = 600;
     ledSettings.errorStrobeSeconds = (uint16_t)v;
   }
-  saveLedSettings();
+  if (!saveLedSettings()) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage unavailable\"}");
+    return;
+  }
   initLed();
 
   server.send(200, "application/json", "{\"status\":\"ok\"}");
@@ -1656,13 +2022,17 @@ static void handleSaveRotation() {
 //  Tasmota power monitoring — config + stats + save
 // ---------------------------------------------------------------------------
 static void handleGetPowerConfig() {
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(410, "application/json", "{\"status\":\"error\",\"message\":\"Smart-plug automation is not available on P4.\"}");
+  return;
+#endif
   int plug = server.hasArg("plug") ? server.arg("plug").toInt() : 0;
   if (plug < 0 || plug >= TASMOTA_PLUG_COUNT) {
     server.send(400, "application/json", "{\"status\":\"error\"}");
     return;
   }
   TasmotaSettings& s = tasmotaSettings[plug];
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["enabled"]         = s.enabled;
   doc["plugType"]        = s.plugType;            // 0=Tasmota, 1=Shelly Gen2/3, 2=Kasa legacy, 3=Shelly Power Strip Gen4
   doc["plugOutlet"]      = s.plugOutlet;          // plugType 3 only: which outlet (0-3)
@@ -1684,7 +2054,11 @@ static void handleGetPowerConfig() {
 }
 
 static void handleGetPowerStats() {
-  JsonDocument doc;
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(200, "application/json", "[]");
+  return;
+#endif
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   JsonArray arr = doc.to<JsonArray>();
   for (uint8_t i = 0; i < TASMOTA_PLUG_COUNT; i++) {
     TasmotaPlugStatsView v;
@@ -1705,6 +2079,10 @@ static void handleGetPowerStats() {
 }
 
 static void handleSavePower() {
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(410, "application/json", "{\"status\":\"error\",\"message\":\"Smart-plug automation is not available on P4.\"}");
+  return;
+#endif
   // Currency and tariff are global - update if present regardless of plug index
   if (server.hasArg("tsm_cur")) {
     strlcpy(tasmotaCurrency, server.arg("tsm_cur").c_str(), sizeof(tasmotaCurrency));
@@ -1766,6 +2144,10 @@ static void handleSavePower() {
 }
 
 static void handlePowerControl() {
+#if defined(BOARD_IS_WS_P4_7B)
+  server.send(410, "application/json", "{\"status\":\"error\",\"message\":\"Smart-plug automation is not available on P4.\"}");
+  return;
+#endif
   int plug = server.hasArg("plug") ? server.arg("plug").toInt() : 0;
   if (plug < 0 || plug >= TASMOTA_PLUG_COUNT || !tasmotaSettings[plug].enabled) {
     server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Plug not enabled\"}");
@@ -1794,7 +2176,7 @@ static void gaugeColorsToJson(JsonObject& obj, const GaugeColors& gc) {
 }
 
 static void handleSettingsExport() {
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["_type"] = "bambuhelper_settings";
   doc["_version"] = FW_VERSION;
 
@@ -1829,7 +2211,7 @@ static void handleSettingsExport() {
   // Display
   char buf[8];
   JsonObject disp = doc["display"].to<JsonObject>();
-  disp["brightness"] = brightness;
+  disp["brightness"] = p4PanelBrightness;
   disp["rotation"] = dispSettings.rotation;
   rgb565ToHtml(dispSettings.bgColor, buf);    disp["bgColor"] = String(buf);
   rgb565ToHtml(dispSettings.trackColor, buf); disp["trackColor"] = String(buf);
@@ -2104,6 +2486,7 @@ static void handleSettingsImportUpload() {
 }
 
 static void handleSettingsImportFinish() {
+  webSettingsDirty = true;
   if (settingsImportOverflow) {
     settingsImportOverflow = false;
     server.send(400, "application/json",
@@ -2111,7 +2494,7 @@ static void handleSettingsImportFinish() {
     return;
   }
 
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   DeserializationError err = deserializeJson(doc, settingsImportBuf);
   settingsImportBuf = "";  // free memory
 
@@ -2203,7 +2586,7 @@ static void handleSettingsImportFinish() {
   // Display
   JsonObject disp = doc["display"];
   if (disp) {
-    if (disp["brightness"].is<uint8_t>()) brightness = disp["brightness"].as<uint8_t>();
+    if (disp["brightness"].is<uint8_t>()) p4PanelBrightness = disp["brightness"].as<uint8_t>();
     if (disp["rotation"].is<uint8_t>())   dispSettings.rotation = normalizeDisplayRotation(disp["rotation"].as<uint8_t>());
     if (disp["bgColor"].is<const char*>())    dispSettings.bgColor = htmlToRgb565(disp["bgColor"]);
     if (disp["trackColor"].is<const char*>()) dispSettings.trackColor = htmlToRgb565(disp["trackColor"]);
@@ -2521,15 +2904,23 @@ static void handleSettingsImportFinish() {
     }
   }
 
-  // Save everything to NVS
+  // Save one complete generation so import cannot expose mixed settings.
+#if defined(BOARD_IS_WS_P4_7B)
+  webSettingsDirty = true;
+  const bool queued = p4CommitWebSettings(1000);
+  if (!queued) {
+    server.send(503, "application/json", "{\"status\":\"error\",\"message\":\"Settings storage is unavailable\"}");
+    return;
+  }
+#else
   saveSettings();
   saveRotationSettings();
   saveButtonSettings();
   saveBuzzerSettings();
-  saveLedSettings();   // sanitizes pin (incl. conflict with freshly-imported buzzer/button)
-
-  server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Settings imported. Restarting...\"}");
+  saveLedSettings();
   scheduleRestart();
+#endif
+  server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Settings imported. Restarting...\"}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2645,7 +3036,7 @@ int         getOtaAutoProgress()  { return otaAutoProgress; }
 const char* getOtaAutoStatus()    { return otaAutoStatus.c_str(); }
 
 static void handleOtaStatus() {
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["inProgress"] = (bool)otaAutoInProgress;
   doc["progress"]   = (int)otaAutoProgress;
   doc["status"]     = otaAutoStatus;
@@ -2663,6 +3054,9 @@ static void handleOtaUpload() {
     otaInProgress = true;
     otaFirstChunk = true;
     Serial.printf("OTA: start, file=%s\n", upload.filename.c_str());
+#if defined(BOARD_IS_WS_P4_7B)
+    p4SetOtaActive(true);
+#endif
 
     disconnectBambuMqtt();
 
@@ -2671,6 +3065,10 @@ static void handleOtaUpload() {
       otaError = "No OTA partition found";
       Serial.println("OTA: no OTA partition found");
       otaInProgress = false;
+#if defined(BOARD_IS_WS_P4_7B)
+      p4SetOtaActive(false);
+      otaMqttReinitPending = true;
+#endif
       return;
     }
     Serial.printf("OTA: firmware upload started, partition size: %u bytes\n", partition->size);
@@ -2679,6 +3077,10 @@ static void handleOtaUpload() {
       otaError = "OTA begin failed: " + String(Update.errorString());
       Serial.printf("OTA: begin failed: %s\n", otaError.c_str());
       otaInProgress = false;
+#if defined(BOARD_IS_WS_P4_7B)
+      p4SetOtaActive(false);
+      otaMqttReinitPending = true;
+#endif
       return;
     }
 
@@ -2700,6 +3102,10 @@ static void handleOtaUpload() {
         otaError = "Invalid firmware file";
         Update.abort();
         otaInProgress = false;
+#if defined(BOARD_IS_WS_P4_7B)
+        p4SetOtaActive(false);
+        otaMqttReinitPending = true;
+#endif
         return;
       }
     }
@@ -2710,6 +3116,10 @@ static void handleOtaUpload() {
         otaError += REPARTITION_HINT;
       Update.abort();
       otaInProgress = false;
+#if defined(BOARD_IS_WS_P4_7B)
+      p4SetOtaActive(false);
+      otaMqttReinitPending = true;
+#endif
     }
 
   } else if (upload.status == UPLOAD_FILE_END) {
@@ -2728,6 +3138,9 @@ static void handleOtaUpload() {
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
     otaInProgress = false;
+#if defined(BOARD_IS_WS_P4_7B)
+    p4SetOtaActive(false);
+#endif
     // Client dropped the connection: handleOtaFinish() never runs for this
     // request, so request the MQTT re-init here.
     otaMqttReinitPending = true;
@@ -2740,6 +3153,9 @@ static void handleOtaFinish() {
     String msg = "{\"status\":\"error\",\"message\":\"" + otaError + "\"}";
     server.send(400, "application/json", msg);
     otaError = "";
+#if defined(BOARD_IS_WS_P4_7B)
+    p4SetOtaActive(false);
+#endif
     otaMqttReinitPending = true;  // failed update means no reboot - restore MQTT
     return;
   }
@@ -2799,7 +3215,7 @@ static void handleOtaSlots() {
   String fw;
   const char* reason;
   const esp_partition_t* other = rollbackCandidate(fw, &reason);
-  JsonDocument doc;
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["can"] = other != nullptr;
   if (other) { if (fw.length() > 0) doc["fw"] = fw; }
   else doc["reason"] = reason;
@@ -2837,8 +3253,13 @@ static void handleOtaRollback() {
 
 // Why the last STA connect failed - read by the AP setup page. Never the password.
 static void handleWifiDiag() {
+#if defined(BOARD_IS_WS_P4_7B)
+  WifiFailInfo fi{};
+  p4WifiFailureSnapshot(fi);
+#else
   const WifiFailInfo& fi = getWifiFailInfo();
-  JsonDocument doc;
+#endif
+  JsonDocument doc(P4_JSON_ALLOCATOR);
   doc["kind"] = wifiFailKindName(fi.kind);
   doc["ssid"] = wifiSSID;
   doc["rssi"] = fi.rssi;
@@ -2875,7 +3296,9 @@ static void handleCaptiveDetect() {
 }
 
 void initWebServer() {
-  initP4CameraService();
+#if !defined(BOARD_IS_WS_P4_7B)
+  registerP4CameraRoutes();
+#endif
   // Captive portal detection endpoints (must be before onNotFound)
   server.on("/generate_204", HTTP_GET, handleCaptiveDetect);        // Android/Samsung
   server.on("/gen_204", HTTP_GET, handleCaptiveDetect);              // Android alt
@@ -2890,9 +3313,11 @@ void initWebServer() {
   server.on("/save/gaugelayout", HTTP_POST, handleSaveGaugeLayout);
   server.on("/save/rotation", HTTP_POST, handleSaveRotation);
   server.on("/save/power", HTTP_POST, handleSavePower);
+#if !defined(BOARD_IS_WS_P4_7B)
   server.on("/power/config", HTTP_GET, handleGetPowerConfig);
   server.on("/power/stats",  HTTP_GET, handleGetPowerStats);
   server.on("/power/control", HTTP_POST, handlePowerControl);
+#endif
   server.on("/buzzer/test", HTTP_POST, handleBuzzerTest);
   server.on("/led/preview", HTTP_POST, handleLedPreview);
   server.on("/led/test",    HTTP_POST, handleLedTest);
@@ -2911,7 +3336,7 @@ void initWebServer() {
   server.on("/screen.bmp", HTTP_GET, handleScreenBmp);
 #if defined(BOARD_IS_WS_P4_7B)
   server.on("/display/ams", HTTP_POST, []() {
-    bool changed = toggleAmsPage();
+    bool changed = p4UiToggleAms();
     server.send(changed ? 200 : 409, "application/json",
       changed ? "{\"status\":\"ok\"}" : "{\"status\":\"error\",\"message\":\"No AMS data available on this screen\"}");
   });
@@ -2953,6 +3378,10 @@ void initWebServer() {
 }
 
 void handleWebServer() {
+#if defined(BOARD_IS_WS_P4_7B)
+  // Registered by the network worker; never call the socket service from loop().
+  return;
+#else
   server.handleClient();
 
   if (otaMqttReinitPending) {
@@ -2971,4 +3400,95 @@ void handleWebServer() {
     Serial.println("Deferred restart triggered");
     ESP.restart();
   }
+#endif
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+static void p4WebTask(void*) {
+  uint32_t lastHealth = 0, calls = 0;
+  for (;;) {
+    if (!webInitialized) { initWebServer(); webInitialized = true; }
+    p4WebRefresh();
+    server.handleClient();
+    ++calls;
+    ssdpTick();
+    if (otaMqttReinitPending && !otaInProgress) {
+      otaMqttReinitPending = false;
+      p4SetOtaActive(false);
+      initBambuMqtt();
+    }
+    if (pendingRestartAt && millis() >= pendingRestartAt && restartGate.take(pendingRestartTicket))
+      ESP.restart();
+    if (millis() - lastHealth >= 10000) {
+      lastHealth = millis();
+      Serial.printf("[web-health] uptime=%lu calls=%lu stack_min=%u\n",
+                    (unsigned long)(lastHealth / 1000), (unsigned long)calls,
+                    (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+void p4WebServiceStart() {
+  P4NetworkStatus network{};
+  if (!p4HttpNetworkSnapshot(network) || !network.wifiOwnerReady) {
+    return;
+  }
+  if (webTaskStarted) return;
+  webTaskStarted = true;
+  // This owner also runs Update.write()/end() for manual OTA, so its stack
+  // must remain accessible when the Flash cache is temporarily disabled.
+  constexpr size_t stackBytes = 12 * 1024;
+  auto* stack = static_cast<StackType_t*>(heap_caps_malloc(stackBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  static StaticTask_t control;
+  if (!stack || !xTaskCreateStatic(p4WebTask, "p4_web", stackBytes / sizeof(StackType_t), nullptr, 2, stack, &control)) {
+    if (stack) heap_caps_free(stack);
+    webTaskStarted = false;
+  }
+}
+bool p4WebRequestRestart(uint32_t delayMs) {
+  pendingRestartAt = millis() + delayMs;
+  return true;
+}
+uint32_t p4WebArmRestart() {
+  pendingRestartTicket = restartGate.arm();
+  pendingRestartAt = 0;
+  return pendingRestartTicket;
+}
+void p4WebCancelRestart(uint32_t ticket) {
+  restartGate.cancel(ticket);
+  if (pendingRestartTicket == ticket) {
+    pendingRestartTicket = 0;
+    pendingRestartAt = 0;
+  }
+}
+bool p4WebFinishRestart(uint32_t ticket, bool stored) {
+  const bool accepted = restartGate.complete(ticket, stored);
+  if (!stored && pendingRestartTicket == ticket) {
+    pendingRestartTicket = 0;
+    pendingRestartAt = 0;
+  }
+  return accepted;
+}
+bool p4WebAwaitStorage(uint32_t ticket, uint32_t restartDelayMs) {
+  for (unsigned i = 0; i < 2000; ++i) {
+    uint32_t completed = 0;
+    bool stored = false;
+    while (p4CloudStorageResult(completed, stored)) {
+      if (completed != ticket) {
+        // There is one HTTP producer, but token + settings can be queued by a
+        // single form. Do not discard the earlier generation's acknowledgement.
+        if (!p4WebFinishRestart(completed, stored)) continue;
+        if (stored && completed == pendingRestartTicket) p4WebRequestRestart(1000);
+        continue;
+      }
+      if (!stored) return false;
+      if (restartDelayMs) p4WebRequestRestart(restartDelayMs);
+      else p4WebCancelRestart(ticket);
+      return true;
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  p4WebCancelRestart(ticket);
+  return false;
+}
+#endif

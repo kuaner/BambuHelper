@@ -71,8 +71,13 @@ bool cloudLoginRefreshStored();
 
 // True when a stored password exists and the last sign-in needed no 2FA.
 bool cloudLoginCanAutoRefresh();
+bool cloudLoginNeededTwoFactor();
 
 void cloudLoginReset();
+
+// P4 routes token persistence through its cloud/storage owner. Other boards
+// keep the original direct NVS implementation. Called only by the login owner.
+void cloudLoginSetTokenHook(bool (*save)(const char* token));
 
 // Reachability self-test: post throwaway credentials to the account endpoint
 // and fetch the CSRF cookie the authenticator leg needs. Reaching the
@@ -89,6 +94,7 @@ inline bool cloudLoginRequestEmailCode(const char*)    { return false; }
 inline bool cloudLoginSubmitCode(const char*)          { return false; }
 inline bool cloudLoginRefreshStored()                  { return false; }
 inline bool cloudLoginCanAutoRefresh()                 { return false; }
+inline bool cloudLoginNeededTwoFactor()                { return false; }
 inline void cloudLoginReset()                          {}
 inline void cloudLoginSelfTest(String& out)            { out = "[]"; }
 

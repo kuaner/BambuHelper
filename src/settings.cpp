@@ -1,6 +1,7 @@
+#define P4_SETTINGS_NO_ALIAS
 #include "settings.h"
 #if defined(BOARD_IS_WS_P4_7B)
-#include "p4_runtime.h"
+#include "p4_ui_state.h"
 #endif
 #include "config.h"
 #include "button.h"
@@ -12,8 +13,17 @@
 #include <nvs.h>           // nvs_get_stats for the storage-usage diagnostics
 #include "esp_ota_ops.h"   // running-slot label for recordBootSlotVersion()
 #include <cstring>   // memcpy/memmove/strlcpy used by the UTF-8 sanitizer helpers
-
+#if defined(BOARD_IS_WS_P4_7B)
+#include "p4_checked_preferences.h"
+#include "p4_storage_commit.h"
+#include <esp_heap_caps.h>
+#endif
 // Global state
+#if defined(BOARD_IS_WS_P4_7B)
+P4UiSettings p4Settings;
+#define P4_SETTINGS_OWNER p4Settings
+#include "p4_legacy_aliases.h"
+#else
 PrinterSlot printers[MAX_PRINTERS];
 uint8_t activePrinterIndex = 0;
 RotationState rotState = { ROTATE_SMART, ROTATE_INTERVAL_MS, 0, 0, 0, false, 1 };
@@ -68,8 +78,15 @@ bool quadPrinterBeta = false;
 // a capped STA attempt succeeds after full-power attempts failed. Local-only -
 // NOT exported (hardware property of this specific board, not a preference).
 bool wifiTxCapped = false;
+#endif
 
+// Boot reads before workers start; afterwards the P4 HTTP/NVS owner is the
+// only task that calls this module. Other tasks receive immutable snapshots.
+#if defined(BOARD_IS_WS_P4_7B)
+static P4CheckedPreferences<Preferences> prefs;
+#else
 static Preferences prefs;
+#endif
 
 // ---------------------------------------------------------------------------
 //  RGB565 <-> HTML hex conversion
@@ -420,6 +437,9 @@ static bool printerSlotIsFactoryDefault(const PrinterConfig& cfg);
 static void erasePrinterKeys(uint8_t index, bool prefsOpen);
 
 void loadSettings() {
+#if defined(BOARD_IS_WS_P4_7B)
+  p4Settings.revision = 0;
+#endif
   // Open read-write from the start: we may need to write a migration flag.
   // This is safe and avoids closing/reopening the partition mid-load.
   prefs.begin(NVS_NAMESPACE, false);
@@ -428,7 +448,11 @@ void loadSettings() {
   strlcpy(wifiSSID, prefs.getString("wifiSSID", "").c_str(), sizeof(wifiSSID));
   strlcpy(wifiPass, prefs.getString("wifiPass", "").c_str(), sizeof(wifiPass));
 
+#if defined(BOARD_IS_WS_P4_7B)
+  p4PanelBrightness = prefs.getUChar("bright", 200);
+#else
   brightness = prefs.getUChar("bright", 200);
+#endif
   activePrinterIndex = prefs.getUChar("activePrt", 0);
   if (activePrinterIndex >= MAX_PRINTERS) activePrinterIndex = 0;
 
@@ -943,6 +967,65 @@ void loadSettings() {
   prefs.end();
 }
 
+#if defined(BOARD_IS_WS_P4_7B)
+void p4BootSettingsSnapshot(P4UiSettings& settings) {
+  settings = p4Settings;
+}
+
+static P4UiSettings* beginSettingsUpdate(P4UiSettings& settings) {
+  static P4UiSettings* previous = nullptr;
+  if (!previous) {
+    previous = static_cast<P4UiSettings*>(heap_caps_calloc(1, sizeof(P4UiSettings),
+                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (!previous) return nullptr;
+  *previous = p4Settings;
+  p4Settings = settings;
+  prefs.beginWriteVerification();
+  return previous;
+}
+
+static bool finishSettingsUpdate(P4UiSettings& settings, P4UiSettings* previous) {
+  const bool stored = prefs.endWriteVerification();
+  if (stored) {
+    settings = p4Settings;
+  } else {
+    // A failed or partial NVS update is never published as a committed value.
+    // Keep the running generation and its MQTT settings unchanged.
+    p4Settings = *previous;
+    settings = *previous;
+    Serial.println("NVS: P4 settings write or read-back FAILED");
+  }
+  return stored;
+}
+
+bool p4StoreSettings(P4UiSettings& settings) {
+  P4UiSettings* previous = beginSettingsUpdate(settings);
+  if (!previous) return false;
+  saveSettings();
+  saveRotationSettings();
+  saveButtonSettings();
+  saveBuzzerSettings();
+  saveLedSettings();
+  return finishSettingsUpdate(settings, previous);
+}
+
+bool p4ResetSettings(P4UiSettings& settings) {
+  P4UiSettings* previous = beginSettingsUpdate(settings);
+  if (!previous) return false;
+  const uint32_t revision = settings.revision;
+  // Absent keys mean defaults only when every old value has actually been
+  // removed. loadSettings() intentionally falls back to existing RAM values.
+  p4Settings = P4UiSettings{};
+  resetSettings();
+  loadSettings();
+  // A blank namespace reconstructs defaults; do not refill it with hundreds of
+  // unnecessary default-valued keys merely to complete a factory reset.
+  p4Settings.revision = revision;
+  return finishSettingsUpdate(settings, previous);
+}
+#endif
+
 // ---------------------------------------------------------------------------
 //  Save settings
 // ---------------------------------------------------------------------------
@@ -951,7 +1034,11 @@ void saveSettings() {
 
   prefs.putString("wifiSSID", wifiSSID);
   prefs.putString("wifiPass", wifiPass);
+#if defined(BOARD_IS_WS_P4_7B)
+  prefs.putUChar("bright", p4PanelBrightness);
+#else
   prefs.putUChar("bright", brightness);
+#endif
   prefs.putUChar("activePrt", activePrinterIndex);
 
   for (uint8_t i = 0; i < MAX_PRINTERS; i++) {
@@ -1225,9 +1312,6 @@ void savePrinterConfig(uint8_t index) {
   prefs.putUChar(key, cfg.lightOffDelayMin);
 
   if (needOpen) prefs.end();
-#if defined(BOARD_IS_WS_P4_7B)
-  p4WorkerPublishConfig(index, cfg);
-#endif
 }
 
 #if defined(BOARD_IS_WS_P4_7B)
@@ -1237,6 +1321,13 @@ void savePrinterConfig(uint8_t index) {
 void clearPrinterConfig(uint8_t index) {
   if (index >= MAX_PRINTERS) return;
   PrinterConfig& cfg = printers[index].config;
+  resetPrinterConfig(cfg);
+#if !defined(BOARD_IS_WS_P4_7B)
+  erasePrinterKeys(index, false);
+#endif
+}
+
+void resetPrinterConfig(PrinterConfig& cfg) {
   memset(&cfg, 0, sizeof(cfg));
   cfg.mode   = CONN_LOCAL;
   cfg.region = REGION_US;
@@ -1245,12 +1336,6 @@ void clearPrinterConfig(uint8_t index) {
   defaultIdleSlots(cfg.idleSlots);
   memset(cfg.landscapeExtras, GAUGE_EMPTY, sizeof(cfg.landscapeExtras));
   memset(cfg.portraitExtras, GAUGE_EMPTY, sizeof(cfg.portraitExtras));
-  // Erase the slot's keys instead of persisting 14 default values - clearing
-  // a printer is the moment its NVS entries should come back, not get rewritten.
-  erasePrinterKeys(index, false);
-#if defined(BOARD_IS_WS_P4_7B)
-  p4WorkerPublishConfig(index, cfg);
-#endif
 }
 
 void saveRotationSettings() {
@@ -1339,7 +1424,9 @@ void resetSettings() {
   prefs.begin(NVS_NAMESPACE, false);
   prefs.clear();
   prefs.end();
+#if !defined(BOARD_IS_WS_P4_7B)
   ESP.restart();
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,13 +1494,21 @@ bool loadCloudToken(char* buf, size_t bufLen) {
   return true;
 }
 
-void clearCloudToken() {
-  prefs.begin(NVS_NAMESPACE, false);
-  prefs.remove("cl_tok2");
-  prefs.remove("cl_token");
-  prefs.remove("cl_email");
-  prefs.remove("cl_pass");
+bool clearCloudToken() {
+#if defined(BOARD_IS_WS_P4_7B)
+  prefs.beginWriteVerification();
+#endif
+  if (!prefs.begin(NVS_NAMESPACE, false)) return false;
+  bool ok = true;
+  for (const char* key : {"cl_tok2", "cl_token", "cl_email", "cl_pass"})
+    if (prefs.isKey(key) && !prefs.remove(key)) ok = false;
   prefs.end();
+#if defined(BOARD_IS_WS_P4_7B)
+  const bool verified = prefs.endWriteVerification();
+  return verified && ok;
+#else
+  return ok;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,3 +1600,33 @@ void clearCloudPassword() {
   prefs.remove("cl_pass");
   prefs.end();
 }
+
+#if defined(BOARD_IS_WS_P4_7B)
+bool p4StoreCloudLogin(const char* email, const char* password, bool savePassword) {
+  prefs.beginWriteVerification();
+  if (!prefs.begin(NVS_NAMESPACE, false)) {
+    prefs.endWriteVerification();
+    return false;
+  }
+  if (email && email[0]) prefs.putString("cl_email", email);
+  else prefs.remove("cl_email");
+  // Two-factor and passwordless restores must not retain an old secret.
+  if (savePassword && password && password[0]) prefs.putString("cl_pass", password);
+  else prefs.remove("cl_pass");
+  prefs.end();
+  return prefs.endWriteVerification();
+}
+
+bool p4DeleteCloudToken() {
+  prefs.beginWriteVerification();
+  if (!prefs.begin(NVS_NAMESPACE, false)) {
+    prefs.endWriteVerification();
+    return false;
+  }
+  prefs.remove("cl_tok2");
+  prefs.remove("cl_token");
+  prefs.end();
+  return prefs.endWriteVerification();
+}
+
+#endif
