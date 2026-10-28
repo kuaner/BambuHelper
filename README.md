@@ -101,8 +101,10 @@ Arduino-ESP32 `3.3.11`，先确认芯片版本再选环境。
 
 | 芯片 / 功能 | PlatformIO 环境 | 发布镜像 |
 | --- | --- | --- |
-| Rev1.3 / pre-v3，云端实景 | `ws_p4_lcd_7b_rev1_camera` | `BambuHelper-ws_p4_lcd_7b_rev1_camera-v4.0.0-*.bin` |
-| Rev3.1+，云端实景 | `ws_p4_lcd_7b_camera` | `BambuHelper-ws_p4_lcd_7b_camera-v4.0.0-*.bin` |
+| Rev1.3 / pre-v3，云端实景 | `ws_p4_lcd_7b_rev1_camera` | `BambuHelper-ws_p4_lcd_7b_rev1_camera-v4.0.1-*.bin` |
+| Rev3.1+，云端实景 | `ws_p4_lcd_7b_camera` | `BambuHelper-ws_p4_lcd_7b_camera-v4.0.1-*.bin` |
+
+正式发布时，在 `main` 更新 `FW_VERSION` 后推送同名 `vX.Y.Z` tag。GitHub Actions 会自动编译两种芯片版本，生成 Full / OTA 与 SHA256 校验文件，并创建 GitHub Release；无需手动上传固件。
 
 ```sh
 # 本机 Rev1.3：编译、USB 刷写与日志

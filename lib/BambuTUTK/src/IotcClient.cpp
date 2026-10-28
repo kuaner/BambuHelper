@@ -193,8 +193,9 @@ static void configure_probe_interface(obn::net::socket_t fd)
 #endif
 }
 
-static bool probe_relay_only()
+static bool probe_relay_only(bool requested = false)
 {
+    if (requested) return true;
 #if defined(__APPLE__)
     const char* value=getenv("BAMBU_TUTK_FORCE_RELAY");
     return value&&strcmp(value,"1")==0;
@@ -1663,9 +1664,10 @@ static int send_rdv_random(obn::net::socket_t sock, const struct sockaddr_in* ds
 
 // 01 04 33: punch directly to a printer candidate address (52 bytes).
 static int send_punch_to_candidate(obn::net::socket_t sock, const struct sockaddr_in* cand,
-                                   const char* uid_upper, const uint8_t token[8])
+                                   const char* uid_upper, const uint8_t token[8],
+                                   bool relay_only)
 {
-    if(probe_relay_only())return 0;
+    if(relay_only)return 0;
     uint8_t pkt[52];
     memset(pkt, 0, sizeof(pkt));
     write_rdv_hdr(pkt, 36, 0x01, 0x04, 0x33);
@@ -1734,6 +1736,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
                               struct sockaddr_in* peer_out,
                               uint32_t* tag_out,
                               bool* direct_out,
+                              bool relay_only,
                               const IotcCancel& cancelled)
 {
     if (!authkey || !authkey[0]) return false;
@@ -1806,7 +1809,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_cand_punch).count() >= 250) {
                 last_cand_punch = now;
                 for (int c = 0; c < num_candidates; ++c) {
-                    send_punch_to_candidate(sock, &candidates[c], uid_upper, session_token);
+                    send_punch_to_candidate(sock, &candidates[c], uid_upper, session_token, relay_only);
                 }
                 for (int s = 0; s < ns; ++s) {
                     send_rdv_punch2(sock, &servers[s], uid_upper, session_token);
@@ -1846,7 +1849,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
         }
 
         // Direct printer rendezvous (02 06 12) from printer P2P address
-        if (!probe_relay_only()&&resp[8] == 0x02 && resp[9] == 0x06 && resp[10] == 0x12) {
+        if (!relay_only&&resp[8] == 0x02 && resp[9] == 0x06 && resp[10] == 0x12) {
             *peer_out = src;
             if (tag_out) *tag_out = 0;
             OBN_DEBUG("iotc rdv: direct printer rendezvous 02 06 12 received from %s:%u",
@@ -1859,7 +1862,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
         // ours) means the path works both ways. Stock then confirms with 04
         // and runs the session directly against that address, even when
         // the servers also offer a relay.
-        if (!probe_relay_only()&&resp[9] == 0x04 && resp[10] == 0x33 && n >= 44 &&
+        if (!relay_only&&resp[9] == 0x04 && resp[10] == 0x33 && n >= 44 &&
             memcmp(resp + 16, uid_upper, kUidLen) == 0 &&
             memcmp(resp + 36, session_token, 8) == 0) {
             if (resp[8] == 0x01) {
@@ -1915,7 +1918,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
                           ntohs(candidates[c].sin_port));
             for (int rep = 0; rep < 3; ++rep) {
                 for (int c = 0; c < num_candidates; ++c) {
-                    send_punch_to_candidate(sock, &candidates[c], uid_upper, session_token);
+                    send_punch_to_candidate(sock, &candidates[c], uid_upper, session_token, relay_only);
                 }
             }
             for (int s = 0; s < ns; ++s) {
@@ -1937,7 +1940,7 @@ static bool offlan_rendezvous(obn::net::socket_t sock,
             // printer may already be waiting for DTLS on that direct path.
             if(!relay_available){
                 relay_available=true;relay_address=src;relay_tag=tag_h;
-                relay_deadline=now+std::chrono::milliseconds(!probe_relay_only()&&num_candidates?400:0);
+                relay_deadline=now+std::chrono::milliseconds(!relay_only&&num_candidates?400:0);
             }
             continue;
         }
@@ -1967,10 +1970,12 @@ static ssize_t recv_cancellable(obn::net::socket_t sock, uint8_t* buf, size_t le
 // JOIN + KNOCK×5 + receive 200B relay assignment + post-KNOCK.
 int iotc_relay_connect(const char* uid_upper, const char* relay_id,
                        const char* region_str, const char* authkey,
-                       IotcConn* out, const IotcCancel& cancelled)
+                       IotcConn* out, const IotcCancel& cancelled,
+                       bool force_relay)
 {
     if (!uid_upper || strlen(uid_upper) != kUidLen || !relay_id || !region_str || !out) return -1;
     if (!authkey) authkey = "";
+    const bool relay_only = probe_relay_only(force_relay);
     memset(out, 0, sizeof(*out));
     out->sock = -1;
 
@@ -2116,7 +2121,7 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
             }
         }
 
-        if(probe_relay_only())continue;
+        if(relay_only)continue;
         peer_addr = src;
         got_assignment = true;
         {
@@ -2137,7 +2142,7 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
         OBN_DEBUG("iotc relay: no direct rendezvous; trying off-LAN candidate exchange");
         if (offlan_rendezvous(sock, master_reply, master_reply_len,
                               uid_upper, authkey, session_token, &peer_addr, &relay_tag,
-                              &punched, cancelled)) {
+                              &punched, relay_only, cancelled)) {
             got_assignment = true;
             char pip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &peer_addr.sin_addr, pip, sizeof(pip));

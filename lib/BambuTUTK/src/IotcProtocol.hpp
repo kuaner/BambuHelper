@@ -89,7 +89,8 @@ int iotc_lan_connect(const char* uid_upper, const char* authkey, int timeout_ms,
 // (its first 16 characters are used). Returns 0 on success, -1 on failure.
 int iotc_relay_connect(const char* uid_upper, const char* relay_id,
                        const char* region_str, const char* authkey,
-                       IotcConn* out, const IotcCancel& cancelled = {});
+                       IotcConn* out, const IotcCancel& cancelled = {},
+                       bool force_relay = false);
 
 // DTLS-PSK handshake. The PSK is derived from passwd (the URL's "passwd"
 // value); account is the identity suffix ("admin"). Returns 0 on success.

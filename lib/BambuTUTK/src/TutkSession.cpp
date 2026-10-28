@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <sys/socket.h>
 #include <thread>
 #include <vector>
 #if defined(ESP_PLATFORM)
@@ -206,7 +207,7 @@ public:
     {
         if (k == 0 || k > 32 || m > 4 || idx >= k + m || n > 1200) return;
         if (have_newest_) {
-            const int32_t d = sequence_age(group, newest_);
+            const int32_t d = sequence_age(newest_, group);
             if (d > kKeepGroups) return;
             if (d < 0) advance(group);
         } else {
@@ -253,6 +254,24 @@ public:
             if (!g.closed && g.data_have < g.max_data + 1) return true;
         }
         return false;
+    }
+
+    uint32_t pending_groups() const
+    {
+        uint32_t count = 0;
+        for (const auto& kv : groups_) if (!kv.second.closed) ++count;
+        return count;
+    }
+
+    uint32_t pending_packets() const
+    {
+        uint32_t count = 0;
+        for (const auto& kv : groups_) {
+            const Group& g = kv.second;
+            if (!g.closed && g.k > g.data_have)
+                count += static_cast<uint32_t>(g.k - g.data_have);
+        }
+        return count;
     }
 
 private:
@@ -380,6 +399,26 @@ public:
         }
     }
 
+    uint32_t pending_frames() const { return static_cast<uint32_t>(pending_.size()); }
+
+    uint32_t pending_slices() const
+    {
+        uint32_t count = 0;
+        for (const auto& kv : pending_) {
+            const Frame& f = kv.second;
+            if (f.count > f.slices.size())
+                count += static_cast<uint32_t>(f.count - f.slices.size());
+        }
+        return count;
+    }
+
+    uint32_t pending_expected_slices() const
+    {
+        uint32_t count = 0;
+        for (const auto& kv : pending_) count += kv.second.count;
+        return count;
+    }
+
 private:
     struct Frame {
         uint16_t count    = 0;
@@ -457,6 +496,9 @@ struct TutkSession::Impl {
     uint32_t          login_nonce   = 0;
     LinkState         link;
     Clock::time_point started;
+    TransportDiagnostics transportDiagnostics{};
+    uint32_t transportSendFailures = 0;
+    uint32_t transportInvalidSliceHeaders = 0;
 
     Impl() { conn.sock = -1; }
 
@@ -465,7 +507,9 @@ struct TutkSession::Impl {
     int  connect(const TutkSessionParams& p);
     int  receive(const TutkSessionParams& p);
 
-    void send(const uint8_t* data, size_t len) { iotc_send_app_data(&conn, data, len); }
+    void send(const uint8_t* data, size_t len) {
+        if (iotc_send_app_data(&conn, data, len) != 0) ++transportSendFailures;
+    }
     void put_header(uint8_t* pkt, uint8_t type, uint8_t flag);
     void send_login(const TutkSessionParams& p);
     void send_ioctrl(uint32_t io_type, const uint8_t* data, size_t len);
@@ -645,8 +689,11 @@ int TutkSession::Impl::open_path(const TutkSessionParams& p)
 {
 #if defined(ESP_PLATFORM)
     return iotc_relay_connect(p.uid.c_str(),p.relay_id.c_str(),p.region.c_str(),
-                              p.authkey.c_str(),&conn,[&]{return !joined.load();});
+                              p.authkey.c_str(),&conn,[&]{return !joined.load();},p.force_relay);
 #else
+    if (p.force_relay)
+        return iotc_relay_connect(p.uid.c_str(),p.relay_id.c_str(),p.region.c_str(),
+                                  p.authkey.c_str(),&conn,[&]{return !joined.load();},true);
     std::atomic<bool> lan_done{false}, lan_stop{false}, relay_stop{false};
     IotcConn lan{};
     lan.sock = -1;
@@ -702,6 +749,12 @@ int TutkSession::Impl::connect(const TutkSessionParams& p)
                     }
         if (!conn.is_lan) path = conn.is_relay ? "relay" : "p2p";
         OBN_INFO("tutk: connected via %s (attempt %d/3)", path, attempt);
+        transportDiagnostics.connectionPath = conn.is_lan ? 1 : conn.is_relay ? 3 : 2;
+        int receiveBufferBytes = -1;
+        socklen_t receiveBufferLength = sizeof(receiveBufferBytes);
+        if (getsockopt(conn.sock, SOL_SOCKET, SO_RCVBUF, &receiveBufferBytes,
+                       &receiveBufferLength) == 0)
+            transportDiagnostics.socketReceiveBufferBytes = receiveBufferBytes;
 
         if (iotc_dtls_handshake(&conn, p.passwd.c_str(), kAccount) != 0) {
             OBN_WARN("tutk: DTLS handshake failed (attempt %d/3)", attempt);
@@ -880,6 +933,7 @@ void TutkSession::Impl::handle_framed(const uint8_t* pkt, size_t n, FecReceiver&
     fecs.add(group, idx, k, (uint8_t)m, body, blen, [&](const uint8_t* s, size_t sn) {
         SliceHeader h;
         if (parse_slice_header(s, sn, h)) frames_q.add(h, s + kSliceHeaderLen);
+        else ++transportInvalidSliceHeaders;
     });
 }
 
@@ -897,7 +951,31 @@ int TutkSession::Impl::receive(const TutkSessionParams& p)
     auto     last_retry     = Clock::now();
     auto     last_data      = last_retry;
     auto     last_stats     = last_retry;
+    uint32_t datagramsReceived = 0;
+    uint32_t framedPackets = 0;
+    uint32_t sequenceGaps = 0;
+    uint32_t sequenceReordered = 0;
+    uint16_t lastAvSequence = 0;
+    bool haveAvSequence = false;
     BambuVector<uint8_t> buf(65536);
+
+    auto publish_diagnostics = [&] {
+        transportDiagnostics.datagramsReceived = datagramsReceived;
+        transportDiagnostics.framedPackets = framedPackets;
+        transportDiagnostics.fecRecovered = static_cast<uint32_t>(fecs.recovered);
+        transportDiagnostics.fecLost = static_cast<uint32_t>(fecs.lost);
+        transportDiagnostics.framesDropped = static_cast<uint32_t>(frames_q.dropped);
+        transportDiagnostics.framesEmitted = static_cast<uint32_t>(frames);
+        transportDiagnostics.pendingFecGroups = fecs.pending_groups();
+        transportDiagnostics.pendingFecPackets = fecs.pending_packets();
+        transportDiagnostics.pendingFrames = frames_q.pending_frames();
+        transportDiagnostics.pendingFrameSlices = frames_q.pending_slices();
+        transportDiagnostics.pendingFrameExpectedSlices = frames_q.pending_expected_slices();
+        transportDiagnostics.invalidSliceHeaders = transportInvalidSliceHeaders;
+        transportDiagnostics.avSequenceGaps = sequenceGaps;
+        transportDiagnostics.avSequenceReordered = sequenceReordered;
+        transportDiagnostics.appSendFailures = transportSendFailures;
+    };
 
     frames_q.any_frame = mode == Mode::Ctrl;
     auto emit = [&](const uint8_t* data, size_t len, bool key) {
@@ -920,6 +998,7 @@ int TutkSession::Impl::receive(const TutkSessionParams& p)
             if (ready.load()) drain_ctrl();
             if (now - last_data >= std::chrono::seconds(5)) {
                 OBN_WARN("tutk: ctrl session silent for 5 s");
+                publish_diagnostics();
                 return -4;
             }
         } else if (frames == 0) {
@@ -947,13 +1026,23 @@ int TutkSession::Impl::receive(const TutkSessionParams& p)
         int n = iotc_recv_app_data(&conn, buf.data(), buf.size(), 20);
         if (n < 0) {
             OBN_WARN("tutk: session lost (%d)", n);
+            publish_diagnostics();
             return n;
         }
+        if (n > 0) ++datagramsReceived;
         if (n < 8) continue;
         last_data = Clock::now();
 
         const uint8_t* pkt = buf.data();
         if (get_le16(pkt + 2) != kAvVersion) continue;
+        const uint16_t avSequence = get_le16(pkt + 4);
+        if (haveAvSequence) {
+            const uint16_t delta = static_cast<uint16_t>(avSequence - lastAvSequence);
+            if (delta == 0 || delta >= 0x8000) ++sequenceReordered;
+            else if (delta > 1) sequenceGaps += static_cast<uint32_t>(delta - 1);
+        }
+        lastAvSequence = avSequence;
+        haveAvSequence = true;
 
         if (!framed) {
             handle_legacy(pkt, (size_t)n, legacy, ack_count, frames, start_triggers);
@@ -967,6 +1056,7 @@ int TutkSession::Impl::receive(const TutkSessionParams& p)
                 OBN_DEBUG("tutk: AV login accepted (ctrl)");
             break;
         case kTypeFramed:
+            ++framedPackets;
             handle_framed(pkt, (size_t)n, fecs, frames_q);
             frames_q.flush(fecs.has_holes(), emit);
             break;
@@ -986,6 +1076,7 @@ int TutkSession::Impl::receive(const TutkSessionParams& p)
 
     OBN_INFO("tutk: session end: %d frames, %d packets recovered, %d lost, %d frames dropped",
              frames, fecs.recovered, fecs.lost, frames_q.dropped);
+    publish_diagnostics();
     send_stop();
     return 0;
 }
@@ -1027,6 +1118,9 @@ void TutkSession::join(const TutkSessionParams& params, FrameCallback cb, Mode m
         impl_->ctrl_out.clear();
     }
     impl_->joined.store(true);
+    impl_->transportDiagnostics = TransportDiagnostics{};
+    impl_->transportSendFailures = 0;
+    impl_->transportInvalidSliceHeaders = 0;
     OBN_INFO("tutk: starting %s session uid=%.20s",
              mode == Mode::Ctrl ? "file-browser" : "video", params.uid.c_str());
 #if defined(ESP_PLATFORM)
@@ -1051,6 +1145,11 @@ void TutkSession::join(const TutkSessionParams& params, FrameCallback cb, Mode m
 }
 
 bool TutkSession::is_ready() const { return impl_->joined.load() && impl_->ready.load(); }
+
+TransportDiagnostics TutkSession::transport_diagnostics() const
+{
+    return impl_->transportDiagnostics;
+}
 
 bool TutkSession::send_ctrl(const std::string& json)
 {

@@ -27,6 +27,8 @@ struct P4CameraResult {
   int cryptoStatus=0;
   int metadataHttpStatus=0;
   bambu_camera::SnapshotFailure snapshotFailure=bambu_camera::SnapshotFailure::None;
+  bambu_camera::SnapshotStage snapshotStage=bambu_camera::SnapshotStage::NotStarted;
+  bambu_camera::SnapshotDiagnostics snapshotDiagnostics{};
   char jobName[128]={};
 };
 P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
@@ -34,5 +36,7 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
 void p4FetchCloudJobName(const P4CameraAccount& account,P4CameraResult& result);
 bambu_camera::Error p4CaptureCloudSnapshot(const obn::camera::tutk::TutkSessionParams& ticket,
                                          BambuVector<uint8_t>& jpeg,unsigned timeout_ms=45000,
-                                         bambu_camera::SnapshotFailure* failure=nullptr);
+                                         bambu_camera::SnapshotFailure* failure=nullptr,
+                                         bambu_camera::SnapshotStage* stage=nullptr,
+                                         bambu_camera::SnapshotDiagnostics* diagnostics=nullptr);
 #endif

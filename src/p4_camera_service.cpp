@@ -303,9 +303,40 @@ bool capture(uint8_t slot) {
   status.durationMs = millis() - began;
   status.busy = false;
   publishStatus();
-  Serial.printf("[camera] result=%s detail=%s duration=%u internal_sample_min=%u stack_min=%u\n",
+  Serial.printf("[camera] result=%s detail=%s snapshot_stage=%s duration=%u internal_sample_min=%u stack_min=%u\n",
                 status.phase, bambu_camera::snapshot_failure_name(status.result.snapshotFailure),
+                bambu_camera::snapshot_stage_name(status.result.snapshotStage),
                 unsigned(status.durationMs), unsigned(status.minInternal), unsigned(status.stackMin));
+  const auto& diag=status.result.snapshotDiagnostics;
+  Serial.printf("[camera] snapshot frames=%lu headers=%lu matched=%lu chunks=%lu bytes=%lu/%lu result=%ld range=%lu+%lu\n",
+                static_cast<unsigned long>(diag.framesReceived),
+                static_cast<unsigned long>(diag.headersParsed),
+                static_cast<unsigned long>(diag.matchedReplies),
+                static_cast<unsigned long>(diag.imageChunks),
+                static_cast<unsigned long>(diag.receivedBytes),
+                static_cast<unsigned long>(diag.expectedBytes),
+                static_cast<long>(diag.lastRemoteResult),
+                static_cast<unsigned long>(diag.lastOffset),
+                static_cast<unsigned long>(diag.lastSize));
+  Serial.printf("[camera] transport datagrams=%lu framed=%lu fec_recovered=%lu fec_lost=%lu frame_drops=%lu emitted=%lu\n",
+                static_cast<unsigned long>(diag.transportDatagrams),
+                static_cast<unsigned long>(diag.transportFramedPackets),
+                static_cast<unsigned long>(diag.fecRecovered),
+                static_cast<unsigned long>(diag.fecLost),
+                static_cast<unsigned long>(diag.transportFrameDrops),
+                static_cast<unsigned long>(diag.transportFramesEmitted));
+  Serial.printf("[camera] transport path=%u rcvbuf=%ld seq_gaps=%lu seq_reorder=%lu send_fail=%lu invalid_slices=%lu pending_fec=%lu/%lu pending_frames=%lu slices=%lu/%lu\n",
+                static_cast<unsigned>(diag.connectionPath),
+                static_cast<long>(diag.socketReceiveBufferBytes),
+                static_cast<unsigned long>(diag.avSequenceGaps),
+                static_cast<unsigned long>(diag.avSequenceReordered),
+                static_cast<unsigned long>(diag.appSendFailures),
+                static_cast<unsigned long>(diag.invalidSliceHeaders),
+                static_cast<unsigned long>(diag.pendingFecGroups),
+                static_cast<unsigned long>(diag.pendingFecPackets),
+                static_cast<unsigned long>(diag.pendingFrames),
+                static_cast<unsigned long>(diag.pendingFrameSlices),
+                static_cast<unsigned long>(diag.pendingFrameExpectedSlices));
   return true;
 }
 
@@ -449,6 +480,45 @@ void httpStatus() {
     doc["crypto_status"] = current.result.cryptoStatus;
     doc["metadata_http"] = current.result.metadataHttpStatus;
     doc["snapshot_failure"] = bambu_camera::snapshot_failure_name(current.result.snapshotFailure);
+    doc["snapshot_stage"] = bambu_camera::snapshot_stage_name(current.result.snapshotStage);
+    const auto& diag=current.result.snapshotDiagnostics;
+    doc["snapshot_frames"] = diag.framesReceived;
+    doc["snapshot_headers"] = diag.headersParsed;
+    doc["snapshot_matches"] = diag.matchedReplies;
+    doc["snapshot_chunks"] = diag.imageChunks;
+    doc["snapshot_bytes"] = diag.receivedBytes;
+    doc["snapshot_total_bytes"] = diag.expectedBytes;
+    doc["snapshot_last_offset"] = diag.lastOffset;
+    doc["snapshot_last_size"] = diag.lastSize;
+    doc["snapshot_remote_result"] = diag.lastRemoteResult;
+    doc["snapshot_transport_datagrams"] = diag.transportDatagrams;
+    doc["snapshot_transport_framed"] = diag.transportFramedPackets;
+    doc["snapshot_fec_recovered"] = diag.fecRecovered;
+    doc["snapshot_fec_lost"] = diag.fecLost;
+    doc["snapshot_frame_drops"] = diag.transportFrameDrops;
+    doc["snapshot_transport_frames"] = diag.transportFramesEmitted;
+    doc["snapshot_pending_fec_groups"] = diag.pendingFecGroups;
+    doc["snapshot_pending_fec_packets"] = diag.pendingFecPackets;
+    doc["snapshot_pending_frames"] = diag.pendingFrames;
+    doc["snapshot_pending_slices"] = diag.pendingFrameSlices;
+    doc["snapshot_pending_expected_slices"] = diag.pendingFrameExpectedSlices;
+    doc["snapshot_invalid_slice_headers"] = diag.invalidSliceHeaders;
+    doc["snapshot_av_sequence_gaps"] = diag.avSequenceGaps;
+    doc["snapshot_av_sequence_reordered"] = diag.avSequenceReordered;
+    doc["snapshot_app_send_failures"] = diag.appSendFailures;
+    doc["snapshot_connection_path"] = diag.connectionPath;
+    doc["snapshot_socket_rcvbuf_bytes"] = diag.socketReceiveBufferBytes;
+    doc["snapshot_fallback_attempted"] = diag.fallbackAttempted;
+    if (diag.fallbackAttempted) {
+      doc["snapshot_preferred_route"] = diag.preferredRelay ? "relay" : "p2p";
+      doc["snapshot_preferred_error"] = bambu_camera::error_name(diag.preferredError);
+      doc["snapshot_preferred_failure"] = bambu_camera::snapshot_failure_name(diag.preferredFailure);
+      doc["snapshot_preferred_stage"] = bambu_camera::snapshot_stage_name(diag.preferredStage);
+      doc["snapshot_preferred_duration_ms"] = diag.preferredDurationMs;
+      doc["snapshot_preferred_connection_path"] = diag.preferredConnectionPath;
+      doc["snapshot_preferred_bytes"] = diag.preferredReceivedBytes;
+      doc["snapshot_preferred_total_bytes"] = diag.preferredExpectedBytes;
+    }
   }
   doc["rgb_ready"] = generation.load() > 0;
   NameFrame name{};

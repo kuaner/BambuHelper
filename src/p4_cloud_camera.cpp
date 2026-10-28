@@ -170,7 +170,8 @@ P4CameraResult p4CaptureCloudSnapshotFromAccount(const P4CameraAccount& account,
     http.end();tls.stop();
   }
   if(account.progress)account.progress("tutk_snapshot");
-  result.error=p4CaptureCloudSnapshot(ticket,jpeg,45000,&result.snapshotFailure);return result;
+  result.error=p4CaptureCloudSnapshot(ticket,jpeg,45000,&result.snapshotFailure,
+                                      &result.snapshotStage,&result.snapshotDiagnostics);return result;
 } catch(...) {
   jpeg.clear();P4CameraResult result;result.error=bambu_camera::Error::TooLarge;return result;
 }
@@ -195,10 +196,15 @@ extern "C" P4CameraResult p4_cloud_camera_link_check(const P4CameraAccount& acco
 // handshake or a snapshot. Image buffers and FEC data live in PSRAM.
 bambu_camera::Error p4CaptureCloudSnapshot(const obn::camera::tutk::TutkSessionParams& ticket,
                                          BambuVector<uint8_t>& jpeg,unsigned timeout_ms,
-                                         bambu_camera::SnapshotFailure* failure){
+                                         bambu_camera::SnapshotFailure* failure,
+                                         bambu_camera::SnapshotStage* stage,
+                                         bambu_camera::SnapshotDiagnostics* diagnostics){
   if(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)<1024*1024)
     return bambu_camera::Error::TooLarge;
-  try{return bambu_camera::capture(ticket,jpeg,timeout_ms,failure);}
+  auto preferred=ticket;
+  preferred.force_relay=true;
+  preferred.allow_path_fallback=true;
+  try{return bambu_camera::capture(preferred,jpeg,timeout_ms,failure,stage,diagnostics);}
   catch(...){jpeg.clear();return bambu_camera::Error::TooLarge;}
 }
 #endif

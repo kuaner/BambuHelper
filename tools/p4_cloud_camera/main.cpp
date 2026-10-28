@@ -19,8 +19,23 @@ int main(int argc,char** argv){
   bambu_camera_debug::secrets={params.uid,params.passwd,params.authkey};
 #endif
   BambuVector<uint8_t> jpeg;
-  const auto result=bambu_camera::capture(params,jpeg);
+  bambu_camera::SnapshotDiagnostics diagnostics;
+  const auto result=bambu_camera::capture(params,jpeg,45000,nullptr,nullptr,&diagnostics);
   std::cout<<"result="<<bambu_camera::error_name(result)<<" bytes="<<jpeg.size()<<"\n";
+  std::cout<<"transport path="<<unsigned(diagnostics.connectionPath)
+           <<" datagrams="<<diagnostics.transportDatagrams
+           <<" framed="<<diagnostics.transportFramedPackets
+           <<" frames="<<diagnostics.transportFramesEmitted
+           <<" fec_recovered="<<diagnostics.fecRecovered
+           <<" fec_lost="<<diagnostics.fecLost
+           <<" frame_drops="<<diagnostics.transportFrameDrops
+           <<" seq_gaps="<<diagnostics.avSequenceGaps
+           <<" seq_reordered="<<diagnostics.avSequenceReordered
+           <<" invalid_slices="<<diagnostics.invalidSliceHeaders
+           <<" pending_slices="<<diagnostics.pendingFrameSlices
+           <<"/"<<diagnostics.pendingFrameExpectedSlices
+           <<" send_failures="<<diagnostics.appSendFailures
+           <<" rcvbuf="<<diagnostics.socketReceiveBufferBytes<<"\n";
   if(result!=bambu_camera::Error::None)return 1;
   std::ofstream output(argv[2],std::ios::binary|std::ios::trunc);
   output.write(reinterpret_cast<const char*>(jpeg.data()),jpeg.size());

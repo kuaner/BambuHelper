@@ -1,0 +1,125 @@
+name: P4 firmware release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: p4-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish P4 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check platformio
+
+      - name: Verify tag matches firmware version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(f"Unsupported release tag: {tag}")
+
+          config = Path("include/config.h").read_text(encoding="utf-8")
+          match = re.search(r'#define\s+FW_VERSION\s+"([^"]+)"', config)
+          if not match or match.group(1) != tag:
+              actual = match.group(1) if match else "missing"
+              raise SystemExit(f"Tag {tag} does not match FW_VERSION {actual}")
+          PY
+
+      - name: Build both P4 camera variants
+        run: >-
+          pio run
+          -e ws_p4_lcd_7b_rev1_camera
+          -e ws_p4_lcd_7b_camera
+
+      - name: Package Full and OTA images
+        run: |
+          python merge_bins.py --board ws_p4_lcd_7b_rev1_camera
+          python merge_bins.py --board ws_p4_lcd_7b_camera
+
+      - name: Validate release images
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"]
+          out = Path("firmware") / version
+          with Path("partitions_32mb.csv").open(newline="", encoding="utf-8") as f:
+              rows = csv.reader(line for line in f if not line.lstrip().startswith("#"))
+              app_slot = next(int(row[4].strip(), 0) for row in rows if row[0].strip() == "app0")
+
+          variants = (
+              "ws_p4_lcd_7b_rev1_camera",
+              "ws_p4_lcd_7b_camera",
+          )
+          for board in variants:
+              stem = f"BambuHelper-{board}-{version}"
+              full = (out / f"{stem}-Full.bin").read_bytes()
+              ota_path = out / f"{stem}-ota.bin"
+              ota = ota_path.read_bytes()
+              build = Path(".pio/build") / board
+              firmware = (build / "firmware.bin").read_bytes()
+              if len(ota) > app_slot:
+                  raise SystemExit(f"{ota_path} exceeds app slot: {len(ota)} > {app_slot}")
+              if ota != firmware:
+                  raise SystemExit(f"{ota_path} does not match the built firmware")
+              for filename, offset in (("bootloader.bin", 0x2000),
+                                       ("partitions.bin", 0x8000),
+                                       ("firmware.bin", 0x10000)):
+                  part = (build / filename).read_bytes()
+                  if full[offset:offset + len(part)] != part:
+                      raise SystemExit(f"{stem}-Full.bin has an invalid {filename} segment")
+              print(f"Validated {stem}: Full={len(full)} bytes, OTA={len(ota)} bytes")
+          PY
+
+      - name: Generate SHA256 checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd "firmware/$RELEASE_TAG"
+          sha256sum ./*.bin > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "firmware/$RELEASE_TAG/BambuHelper-ws_p4_lcd_7b_rev1_camera-$RELEASE_TAG-Full.bin" \
+            "firmware/$RELEASE_TAG/BambuHelper-ws_p4_lcd_7b_rev1_camera-$RELEASE_TAG-ota.bin" \
+            "firmware/$RELEASE_TAG/BambuHelper-ws_p4_lcd_7b_camera-$RELEASE_TAG-Full.bin" \
+            "firmware/$RELEASE_TAG/BambuHelper-ws_p4_lcd_7b_camera-$RELEASE_TAG-ota.bin" \
+            "firmware/$RELEASE_TAG/SHA256SUMS.txt" \
+            --title "$RELEASE_TAG — ESP32-P4 cloud camera dashboard" \
+            --generate-notes \
+            --verify-tag \
+            --latest
