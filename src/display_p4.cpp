@@ -69,6 +69,19 @@ public:
     g.setTextSize(1);
     return result;
   }
+  int textRight(const char* value, int x, int y, int width, uint16_t color,
+                FontID face, float scale = 1, uint16_t background = BG) {
+    // The title status has a fixed, bounded width, so measure it in one pass.
+    g.setTextSize(scale);
+    const lgfx::IFont* f = cachedFont(face);
+    g.setFont(f ? f : &lgfx::fonts::Font2);
+    g.setTextDatum(lgfx::textdatum_t::middle_right);
+    g.setTextColor(color, background);
+    g.drawString(value, x + width, y);
+    const int result = g.textWidth(value);
+    g.setTextSize(1);
+    return result;
+  }
   void pill(const char* value, int x, int y, int w, uint16_t color = GREEN) {
     g.fillRoundRect(x, y, w, 38, 10, SURFACE);
     text(value, x + 12, y + 7, w - 24, color, FONT_SMALL_2X, .88f, SURFACE);
@@ -296,10 +309,18 @@ void job(Canvas& cv, const PrinterSlot& p, time_t now, bool networkOnline, uint3
 #if defined(P4_CLOUD_CAMERA_EXPERIMENTAL)
   p4CameraJobName(p,taskName,sizeof(taskName));
 #endif
-  cv.text(taskName[0]?taskName:s.subtaskName[0] ? jobDisplayName(s) : "等待新的打印任务", CONTENT,96,RIGHT-CONTENT,FG,FONT_CJK,1,BG,true);
   const char* stage = runningStageLabel(s);
-  if (stage || s.gcodeStateId != GCODE_RUNNING || !s.connected)
-    cv.text(!s.connected ? stateName(s,networkOnline) : stage ? stage : stateName(s,networkOnline), CONTENT,128,RIGHT-CONTENT,accent(s),FONT_P4_CN_SMALL,1,BG,true);
+  const char* status = !s.connected ? stateName(s,networkOnline) :
+                       stage ? stage : s.gcodeStateId != GCODE_RUNNING ? stateName(s,networkOnline) : nullptr;
+  int titleWidth = RIGHT - CONTENT;
+  if (status) {
+    constexpr int statusWidth = 200;
+    const int used = cv.textRight(status, RIGHT - statusWidth, 96, statusWidth,
+                                  accent(s), FONT_P4_CN_SMALL);
+    titleWidth = std::max(0, RIGHT - used - 20 - CONTENT);
+  }
+  cv.text(taskName[0]?taskName:s.subtaskName[0] ? jobDisplayName(s) : "等待新的打印任务",
+          CONTENT,96,titleWidth,FG,FONT_CJK,1,BG,true);
 #if HAS_HMS_UI
   if (s.hmsCount || s.printError) {
     char badge[24]; snprintf(badge,sizeof(badge),"提醒 %u",s.hmsCount+(s.printError?1:0));

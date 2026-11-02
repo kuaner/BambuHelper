@@ -6,6 +6,10 @@ upstream specification.
 
 - Follow the approved Android dashboard composition and keep all established
   spacing, font alignment, AMS margins and strong progress animation.
+- Keep the printing stage (for example, leveling or nozzle cleaning) on the
+  right of the task-title row. Reserve its measured width and ellipsize the
+  title; without a status, the title can use the full row. It must never
+  overlap the large progress percentage below.
 - Only the top info icon opens/closes details. Remove refresh. Use a clear gear
   for settings. Clicking the picture toggles printer artwork and real chamber
   image; default to chamber image and show two selection dots.

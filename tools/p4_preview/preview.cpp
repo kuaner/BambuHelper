@@ -101,6 +101,12 @@ int main(int argc,char** argv) {
   assert(gradientA != gradientB);
   assert(p4ui::p4ProgressPixel(0, 340, 300, 0x65d9) ==
          p4ui::p4ProgressPixel(0, 340, 1500, 0x65d9));
+  s.stgCur=1;
+  snprintf(s.subtaskName,sizeof(s.subtaskName),"像素风可堆叠大容量收纳箱桌面整理器加长任务名称");
+  render("title-stage");
+  s.stgCur=0;
+  snprintf(s.subtaskName,sizeof(s.subtaskName),"像素风可堆叠大容量收纳箱");
+  render("title-full");
   const int untouched = frame.readPixel(346, 96);
   drawP4Progress(frame,p4ui::CONTENT,p4ui::PROGRESS_Y,p4ui::RIGHT-p4ui::CONTENT,52,300,accentP4(p.state));
   assert(frame.readPixel(400,p4ui::PROGRESS_Y+3) != frame.readPixel(600,p4ui::PROGRESS_Y+3));
