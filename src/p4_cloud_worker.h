@@ -21,8 +21,9 @@ bool p4CloudDeleteCredentials();
 bool p4CloudSetAutomatic(bool enabled);
 bool p4CloudSubmitCredentials(const char* json, size_t length, String& error);
 bool p4CloudSaveToken(const char* token);
-bool p4CloudStartLogin(const char* email, const char* password, bool save, bool emailCode, String& error);
-bool p4CloudSubmitCode(const char* code);
+bool p4CloudStartLogin(const char* email, const char* password, bool save, bool emailCode,
+                       CloudRegion region, String& error);
+bool p4CloudSubmitCode(const char* code, CloudRegion region);
 bool p4CloudStartPrinters(CloudRegion region);
 bool p4CloudStartDiagnostics(CloudRegion region);
 bool p4CloudStartSelfTest();

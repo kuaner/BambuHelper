@@ -31,6 +31,12 @@
 
 class MqttRxClient;
 
+// Upper bound on how long a fresh connection may still adopt standing HMS
+// codes as baseline. Long enough for the initial pushall reply (sent 2 s after
+// connect and answered within a second or two on both transports), short
+// enough that a genuinely new alert right after a connect is not swallowed.
+static constexpr uint32_t HMS_BASELINE_WINDOW_MS = 45000;
+
 // P4 owns its connections in p4_mqtt_worker.cpp; other boards retain the
 // original single-loop storage. Protocol parsing is shared, never its sockets.
 #if defined(BOARD_IS_WS_P4_7B)
@@ -63,6 +69,7 @@ struct MqttConn {
 #if HAS_HMS_UI
   bool hmsBaselineOpen;
   bool hmsBaselineSeal;
+  uint32_t hmsBaselineOpenMs;   // window age cap; see the close rule
 #endif
 };
 static MqttConn conns[MAX_ACTIVE_PRINTERS];
@@ -759,9 +766,12 @@ static void hmsInsertSorted(BambuState& s, uint32_t attr, uint32_t code) {
 // ---------------------------------------------------------------------------
 // baselineWindow: this report still counts as "what was already wrong when we
 // connected" — see the MqttConn.hmsBaseline* flags.
-static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
+static bool parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
                              const char* serial, bool baselineWindow) {
   const char* payloadEnd = (const char*)payload + length;
+  // Reported to the caller so the baseline window can close on the report that
+  // actually carries print.hms — not on whichever frame happens to land next.
+  bool sawHmsArray = false;
 #if !HAS_HMS_UI
   (void)baselineWindow;
 #endif
@@ -820,7 +830,7 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
                                               DeserializationOption::Filter(filter));
   if (err) {
     MQTT_LOG("JSON parse error: %s", err.c_str());
-    return;
+    return sawHmsArray;
   }
 
   // Deferred activeTray sources (resolved after AMS unit loop)
@@ -1186,7 +1196,7 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   JsonObject print = doc["print"];
   if (print.isNull()) {
     s.lastUpdate = millis();  // message arrived, but no print data
-    return;
+    return sawHmsArray;
   }
 
   if (mqttDebugLog && print["gcode_state"].is<const char*>()) {
@@ -1725,6 +1735,7 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   // report, so identity is the (attr, code) pair alone — never compare the
   // array by raw equality. Absent key preserves state, empty array clears it.
   if (print["hms"].is<JsonArray>()) {
+    sawHmsArray = true;
     JsonArray hmsArr = print["hms"].as<JsonArray>();
     s.hmsCount = 0;
     s.hmsTotal = 0;
@@ -1851,6 +1862,7 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
     }
   }
 #endif
+  return sawHmsArray;
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,16 +1903,27 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
   baselineWindow = c->hmsBaselineOpen;
 #endif
 
-  parseMqttPayload(payload, length, s, cfgSerial, baselineWindow);
+  [[maybe_unused]] const bool sawHms = parseMqttPayload(payload, length, s, cfgSerial, baselineWindow);
 
 #if HAS_HMS_UI
-  // Close the window on the first report after the baseline pushall went out —
-  // that report is itself still baseline (see the MqttConn comment).
-  if (c->hmsBaselineOpen && c->hmsBaselineSeal) {
-    c->hmsBaselineOpen = false;
-    c->hmsBaselineSeal = false;
-    MQTT_LOG("[%d] HMS baseline window closed, %u standing code(s)%s",
-             c->slotIndex, s.hmsBaselineCount, s.hmsBaselineSaturated ? " (saturated)" : "");
+  // Close on the report that actually carries print.hms, not merely the next
+  // frame: the broker can deliver an unrelated delta between our baseline
+  // pushall and its reply, and closing early turned the standing codes in that
+  // reply into "new" alerts — the phantom warning that appeared after some
+  // reboots and not others. The age cap still closes the window when no reply
+  // ever arrives, so a failed pushall cannot keep real alerts baseline.
+  if (c->hmsBaselineOpen) {
+    const bool answered = c->hmsBaselineSeal && sawHms;
+    const bool expired = c->hmsBaselineOpenMs != 0 &&
+                         millis() - c->hmsBaselineOpenMs > HMS_BASELINE_WINDOW_MS;
+    if (answered || expired) {
+      c->hmsBaselineOpen = false;
+      c->hmsBaselineSeal = false;
+      c->hmsBaselineOpenMs = 0;
+      MQTT_LOG("[%d] HMS baseline window closed (%s), %u standing code(s)%s",
+               c->slotIndex, answered ? "hms report" : "timeout",
+               s.hmsBaselineCount, s.hmsBaselineSaturated ? " (saturated)" : "");
+    }
   }
 #endif
 }
@@ -1981,6 +2004,7 @@ void finishReconnect(MqttConn& c,bool connected,unsigned long t0) {
     }
     c.hmsBaselineOpen = true;
     c.hmsBaselineSeal = false;
+    c.hmsBaselineOpenMs = millis();
 #endif
     if (!quickDisconnect) {
       c.consecutiveFails = 0;  // only reset backoff on stable connections
@@ -2444,6 +2468,7 @@ void handleConn(MqttConn& c) {
         // they would swallow a live alert.
         c.hmsBaselineOpen = true;
         c.hmsBaselineSeal = true;
+        c.hmsBaselineOpenMs = millis();
 #endif
       }
     }
@@ -2591,6 +2616,7 @@ void initConnSlot(uint8_t i) {
 #if HAS_HMS_UI
   c.hmsBaselineOpen = false;  // opened on successful subscribe
   c.hmsBaselineSeal = false;
+  c.hmsBaselineOpenMs = 0;
 #endif
 
 #if defined(BOARD_IS_WS_P4_7B)

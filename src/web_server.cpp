@@ -1340,14 +1340,24 @@ static void handleCloudLoginStart() {
     server.send(400, "application/json", "{\"state\":\"failed\",\"message\":\"Invalid email or password length.\"}");
     return;
   }
-  if (!p4CloudStartLogin(email.c_str(), password.c_str(), server.arg("save") == "1", emailCode, error)) {
+  // The page can sign in before anything is saved, so the region comes from the
+  // form: a CN account must authenticate against api.bambulab.cn, and its token
+  // cookie lives on bambulab.cn.
+  const CloudRegion region = server.hasArg("region")
+                               ? (server.arg("region") == "cn" ? REGION_CN : REGION_US)
+                               : printers[0].config.region;
+  if (!p4CloudStartLogin(email.c_str(), password.c_str(), server.arg("save") == "1", emailCode,
+                         region, error)) {
     sendP4CloudStatus();
     return;
   }
   sendP4CloudStatus();
 }
 static void handleCloudLoginCode() {
-  if (!p4CloudSubmitCode(server.arg("code").c_str())) {
+  const CloudRegion region = server.hasArg("region")
+                               ? (server.arg("region") == "cn" ? REGION_CN : REGION_US)
+                               : printers[0].config.region;
+  if (!p4CloudSubmitCode(server.arg("code").c_str(), region)) {
     sendP4CloudStatus();
     return;
   }
@@ -3251,6 +3261,27 @@ static void handleOtaRollback() {
   scheduleRestart(1500);
 }
 
+// Lists nearby networks for the setup page so nobody has to type an SSID by
+// hand (and get the case wrong). Sorted strongest-first; the radio does a
+// blocking scan, which is fine on a page that only exists during setup.
+static void handleWifiScan() {
+  const int found = WiFi.scanNetworks(false, true);
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (int i = 0; i < found; ++i) {
+    const String ssid = WiFi.SSID(i);
+    if (!ssid.length()) continue;                 // hidden network
+    JsonObject o = arr.add<JsonObject>();
+    o["ssid"] = ssid;
+    o["rssi"] = WiFi.RSSI(i);
+    o["enc"] = (int)WiFi.encryptionType(i) != 0;
+  }
+  WiFi.scanDelete();
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
 // Why the last STA connect failed - read by the AP setup page. Never the password.
 static void handleWifiDiag() {
 #if defined(BOARD_IS_WS_P4_7B)
@@ -3309,6 +3340,7 @@ void initWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save/wifi", HTTP_POST, handleSaveWifi);
   server.on("/wifi/diag", HTTP_GET, handleWifiDiag);
+  server.on("/wifi/scan", HTTP_GET, handleWifiScan);
   server.on("/save/printer", HTTP_POST, handleSavePrinter);
   server.on("/save/gaugelayout", HTTP_POST, handleSaveGaugeLayout);
   server.on("/save/rotation", HTTP_POST, handleSaveRotation);

@@ -58,12 +58,17 @@ bool            cloudLoginLastFailed();
 // Password sign-in. Returns false on any hard failure; the state says whether a
 // second factor is still needed.
 bool cloudLoginWithPassword(const char* email, const char* password);
+// Same, against a region the caller names explicitly (the web page can switch
+// region and sign in before anything is saved).
+bool cloudLoginWithPassword(const char* email, const char* password, CloudRegion region);
 
 // Mail a login code to the account. No password is sent or stored.
 bool cloudLoginRequestEmailCode(const char* email);
+bool cloudLoginRequestEmailCode(const char* email, CloudRegion region);
 
 // Second step: whichever code the current state is waiting for.
 bool cloudLoginSubmitCode(const char* code);
+bool cloudLoginSubmitCode(const char* code, CloudRegion region);
 
 // Sign in again with the saved password, for when the token expires. Only works
 // on accounts without 2FA - anything else needs a human with a code.
@@ -90,8 +95,11 @@ inline CloudLoginState cloudLoginState()               { return CLOUD_LOGIN_IDLE
 inline const char*     cloudLoginMessage()             { return ""; }
 inline bool            cloudLoginLastFailed()          { return false; }
 inline bool cloudLoginWithPassword(const char*, const char*) { return false; }
+inline bool cloudLoginWithPassword(const char*, const char*, CloudRegion) { return false; }
 inline bool cloudLoginRequestEmailCode(const char*)    { return false; }
+inline bool cloudLoginRequestEmailCode(const char*, CloudRegion) { return false; }
 inline bool cloudLoginSubmitCode(const char*)          { return false; }
+inline bool cloudLoginSubmitCode(const char*, CloudRegion) { return false; }
 inline bool cloudLoginRefreshStored()                  { return false; }
 inline bool cloudLoginCanAutoRefresh()                 { return false; }
 inline bool cloudLoginNeededTwoFactor()                { return false; }

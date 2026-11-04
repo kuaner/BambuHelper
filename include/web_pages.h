@@ -47,6 +47,9 @@ h1{color:#58A6FF;font-size:22px;margin-bottom:6px}
 label{display:block;color:#8B949E;font-size:13px;margin-bottom:4px;margin-top:10px}
 input[type=text],input[type=password]{width:100%;padding:8px 10px;border:1px solid #30363D;border-radius:6px;background:#0D1117;color:#E6EDF3;font-size:14px;outline:none}
 input:focus{border-color:#58A6FF}
+select{width:100%;padding:8px 10px;border:1px solid #30363D;border-radius:6px;background:#0D1117;color:#E6EDF3;font-size:14px;outline:none}
+.btn-sm{display:inline-block;width:auto;padding:8px 12px;font-size:13px;margin-top:0;white-space:nowrap;background:#21262D;border:1px solid #30363D}
+.btn-sm:hover{background:#30363D}
 .btn{display:block;width:100%;padding:12px;border:none;border-radius:6px;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px;text-align:center;background:#238636;color:#fff}
 .btn:hover{background:#2EA043}
 </style>
@@ -61,6 +64,11 @@ input:focus{border-color:#58A6FF}
 <div class="card">
   <h2>Connect to WiFi Network</h2>
   <p style="font-size:12px;color:#8B949E;margin-bottom:10px">Enter your WiFi credentials. After saving, the device will restart and connect to your network. You can then access the full settings at the device's IP address.</p>
+  <label for="ssidList">Nearby networks</label>
+  <div style="display:flex;gap:8px;align-items:stretch">
+    <select id="ssidList" onchange="pickSsid(this.value)"><option value="">Scanning...</option></select>
+    <button type="button" class="btn btn-sm" onclick="scanWifi()">Rescan</button>
+  </div>
   <label for="ssid">WiFi SSID</label>
   <input type="text" id="ssid" placeholder="Your WiFi network name">
   <label for="pass">WiFi Password</label>
@@ -70,6 +78,21 @@ input:focus{border-color:#58A6FF}
   <div id="msg" role="status" aria-live="polite" aria-atomic="true" style="margin-top:10px;font-size:13px;text-align:center"></div>
 </div>
 <script>
+function pickSsid(v){ if(v) document.getElementById('ssid').value=v; }
+function scanWifi(){
+  var sel=document.getElementById('ssidList');
+  sel.innerHTML='<option value="">Scanning...</option>';
+  fetch('/wifi/scan').then(function(r){return r.json();}).then(function(list){
+    sel.innerHTML='<option value="">Choose a network...</option>';
+    (list||[]).forEach(function(n){
+      if(!n||!n.ssid)return;
+      var o=document.createElement('option');
+      o.value=n.ssid;
+      o.textContent=n.ssid+'  ('+n.rssi+' dBm'+(n.enc?'':', open')+')';
+      sel.appendChild(o);
+    });
+  }).catch(function(){ sel.innerHTML='<option value="">Scan failed - rescan</option>'; });
+}
 function saveWifi(){
   var s=document.getElementById('ssid').value,p=document.getElementById('pass').value;
   if(!s){document.getElementById('msg').innerHTML='<span style="color:#F85149">Enter SSID</span>';return;}
@@ -79,8 +102,7 @@ function saveWifi(){
     .then(function(){document.body.innerHTML='<div style="text-align:center;padding-top:80px"><h2 style="color:#3FB950">WiFi Saved!</h2><p style="color:#8B949E;margin-top:10px">Restarting... Connect to your WiFi and open the device IP address in a browser.</p></div>';})
     .catch(function(e){document.getElementById('msg').style.color='#F85149';document.getElementById('msg').textContent='Connection error';console.warn('saveWifi:',e);});
 }
-fetch('/wifi/diag').then(function(r){return r.json();}).then(function(d){
-  if(!d||d.kind==='none')return;
+fetch('/wifi/diag').then(function(r){return r.json();}).then(function(d){  if(!d||d.kind==='none')return;
   var q='"'+d.ssid+'"',db=d.rssi?' ('+d.rssi+' dBm)':'',t,m;
   var H={
     not_found:['Network not found','Could not find '+q+'. Check the name. BambuHelper needs a 2.4 GHz network: 5 GHz-only networks and phone hotspots without "Maximize Compatibility" are invisible to it.'],
@@ -100,6 +122,7 @@ fetch('/wifi/diag').then(function(r){return r.json();}).then(function(d){
   var s=document.getElementById('ssid');
   if(!s.value)s.value=d.kind==='name_mismatch'?d.near:d.ssid;
 }).catch(function(){});
+scanWifi();
 </script>
 </body></html>
 )rawliteral";
@@ -270,7 +293,7 @@ static const char PAGE_HTML_1[] PROGMEM = R"rawliteral(
           <label for="region">Server region</label>
           <!-- US and EU reach the same broker and the same API, so they are one
                choice here; either stored value keeps this option selected. -->
-          <select id="region">
+          <select id="region" onchange="syncTokenRegion()">
             <option value="us" %REGION_US%%REGION_EU%>Europe / Americas</option>
             <option value="cn" %REGION_CN%>China (CN)</option>
           </select>
@@ -348,10 +371,10 @@ R"rawliteral(
           <summary>How to get your access token</summary>
           <div>
             <ol style="margin:0;padding-left:20px;font-size:12.5px;color:var(--text-mid);line-height:1.7">
-              <li>Open <a href="https://bambulab.com" target="_blank" style="color:var(--accent)">bambulab.com</a> and log in.</li>
+              <li>Open <a id="cl_tokenSite" href="https://bambulab.com" target="_blank" style="color:var(--accent)">bambulab.com</a> and log in.</li>
               <li>Press <span class="mono" style="border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11px;background:var(--bg-sub)">F12</span> to open DevTools.</li>
               <li>Go to <strong>Application</strong> (Chrome/Edge) or <strong>Storage</strong> (Firefox).</li>
-              <li>Expand <strong>Cookies</strong> -&gt; click <strong>bambulab.com</strong>.</li>
+              <li>Expand <strong>Cookies</strong> -&gt; click <strong id="cl_tokenCookie">bambulab.com</strong>.</li>
               <li>Find the cookie named <span class="mono">token</span> and copy its value.</li>
               <li>Paste it below and save.</li>
             </ol>

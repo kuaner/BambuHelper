@@ -3,12 +3,14 @@
 #include <cstdint>
 
 int main() {
+  // Five minutes between good captures; a failure retries in one minute and
+  // stays there - no escalating backoff that parks a stale frame for longer.
   assert(p4CameraRetryDelayMs(0) == 300000);
   assert(p4CameraRetryDelayMs(1) == 60000);
-  assert(p4CameraRetryDelayMs(2) == 120000);
-  assert(p4CameraRetryDelayMs(3) == 240000);
-  assert(p4CameraRetryDelayMs(4) == 480000);
-  assert(p4CameraRetryDelayMs(99) == 480000);
+  assert(p4CameraRetryDelayMs(2) == 60000);
+  assert(p4CameraRetryDelayMs(3) == 60000);
+  assert(p4CameraRetryDelayMs(4) == 60000);
+  assert(p4CameraRetryDelayMs(99) == 60000);
   // millis() wrap must not postpone a capture indefinitely.
   constexpr uint32_t beforeWrap = UINT32_MAX - 1000;
   assert(!p4CameraRetryDue(1000, beforeWrap, 0));

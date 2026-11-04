@@ -115,12 +115,12 @@
 #define LY_IDLE_G_OFFSET      210
 
 // --- Idle screen (no printer) ---
-#define LY_IDLE_NP_TITLE_Y  100
-#define LY_IDLE_NP_WIFI_Y   200
+#define LY_IDLE_NP_TITLE_Y  140
+#define LY_IDLE_NP_WIFI_Y   240
 #define LY_IDLE_NP_DOT_Y    270
-#define LY_IDLE_NP_MSG_Y    350
+#define LY_IDLE_NP_MSG_Y    340
 #define LY_IDLE_NP_OPEN_Y   420
-#define LY_IDLE_NP_IP_Y    500
+#define LY_IDLE_NP_IP_Y    505
 
 // --- Finished screen ---
 #define LY_FIN_GAUGE_R   88
@@ -134,13 +134,13 @@
 #define LY_FIN_WIFI_Y   577
 
 // --- AP mode screen ---
-#define LY_AP_TITLE_Y     90
-#define LY_AP_SSID_LBL_Y 180
-#define LY_AP_SSID_Y     245
-#define LY_AP_PASS_LBL_Y 310
-#define LY_AP_PASS_Y      355
-#define LY_AP_OPEN_Y      435
-#define LY_AP_IP_Y        510
+#define LY_AP_TITLE_Y     80
+#define LY_AP_SSID_LBL_Y 175
+#define LY_AP_SSID_Y     255
+#define LY_AP_PASS_LBL_Y 340
+#define LY_AP_PASS_Y      410
+#define LY_AP_OPEN_Y      475
+#define LY_AP_IP_Y        535
 
 // --- Simple clock ---
 #define LY_CLK_CLEAR_Y   100

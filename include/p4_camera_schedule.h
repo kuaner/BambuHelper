@@ -1,10 +1,17 @@
 #pragma once
 #include <cstdint>
 
-// Successful captures repeat after five minutes. Failed captures back off to at
-// most eight minutes, independent of whether an older image remains visible.
+// A working capture repeats every five minutes; a failed one retries after a
+// minute. There is deliberately no escalating backoff: the live image is the
+// point of the view, and a failure that parks the previous frame for eight
+// minutes reads as "the picture is stuck". The burst guard is the attempt
+// clock itself - every attempt, successful or not, advances the scheduler (see
+// cameraTask), so a broken capture retries once a minute instead of spinning.
+constexpr uint32_t p4CameraRefreshMs() { return 300000u; }
+constexpr uint32_t p4CameraRetryMs()   { return 60000u; }
+
 constexpr uint32_t p4CameraRetryDelayMs(unsigned failures) {
-  return failures == 0 ? 300000u : (30000u << (failures > 4 ? 4 : failures));
+  return failures == 0 ? p4CameraRefreshMs() : p4CameraRetryMs();
 }
 
 constexpr bool p4CameraRetryDue(uint32_t now, uint32_t previous, unsigned failures) {

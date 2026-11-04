@@ -32,6 +32,13 @@ static bool   g_neededTwoFactor = false;
 static bool   g_lastFailed = false;
 static bool (*g_tokenHook)(const char*) = nullptr;
 
+// Region of the sign-in flow in progress. The web page lets the user pick a
+// region and sign in before saving the printer, so the flow cannot read the
+// stored config blindly: a CN account authenticates against bambulab.cn and its
+// token cookie lives there, not on bambulab.com.
+static CloudRegion g_flowRegion = REGION_US;
+static bool g_flowRegionSet = false;
+
 void cloudLoginSetTokenHook(bool (*save)(const char*)) { g_tokenHook = save; }
 
 CloudLoginState cloudLoginState()   { return g_state; }
@@ -54,6 +61,7 @@ static bool fail(const char* message, CloudLoginState state = CLOUD_LOGIN_FAILED
 }
 
 void cloudLoginReset() {
+  g_flowRegionSet = false;
   g_state = CLOUD_LOGIN_IDLE;
   g_message = "";
   g_lastFailed = false;
@@ -302,7 +310,7 @@ static bool cloudRequest(const char* host, const char* path, const char* method,
 // ---------------------------------------------------------------------------
 
 static CloudRegion currentRegion() {
-  return printers[0].config.region;
+  return g_flowRegionSet ? g_flowRegion : printers[0].config.region;
 }
 
 // Every write to the site host is CSRF-guarded, so the cookie has to exist
@@ -457,7 +465,13 @@ static bool handleLoginReply(const CloudResponse& r) {
 }
 
 bool cloudLoginWithPassword(const char* email, const char* password) {
+  return cloudLoginWithPassword(email, password, printers[0].config.region);
+}
+
+bool cloudLoginWithPassword(const char* email, const char* password, CloudRegion region) {
   cloudLoginReset();
+  g_flowRegion = region;
+  g_flowRegionSet = true;
   g_email = email;
 
   JsonDocument body(p4JsonAllocator());
@@ -476,7 +490,13 @@ bool cloudLoginWithPassword(const char* email, const char* password) {
 }
 
 bool cloudLoginRequestEmailCode(const char* email) {
+  return cloudLoginRequestEmailCode(email, printers[0].config.region);
+}
+
+bool cloudLoginRequestEmailCode(const char* email, CloudRegion region) {
   cloudLoginReset();
+  g_flowRegion = region;
+  g_flowRegionSet = true;
   g_email = email;
   g_neededTwoFactor = true;      // this path never has a password to store
 
@@ -502,6 +522,12 @@ bool cloudLoginRequestEmailCode(const char* email) {
 }
 
 bool cloudLoginSubmitCode(const char* code) {
+  return cloudLoginSubmitCode(code, currentRegion());
+}
+
+bool cloudLoginSubmitCode(const char* code, CloudRegion region) {
+  g_flowRegion = region;
+  g_flowRegionSet = true;
   const CloudLoginState keep = g_state;   // so a mistyped code can be retried
   if (keep != CLOUD_LOGIN_NEED_TFA && keep != CLOUD_LOGIN_NEED_EMAIL_CODE) {
     return fail("Nothing is waiting for a code - start again.", keep);

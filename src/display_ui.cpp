@@ -1122,7 +1122,23 @@ static int16_t drawBatteryPrefix(int16_t y);
 //  Screen: Idle (connected, not printing)
 // ---------------------------------------------------------------------------
 static void drawIdleNoPrinter() {
-  if (!forceRedraw) return;
+  // The address is the whole point of this screen, and it arrives *after* the
+  // screen was first painted (the transition happens while the device still
+  // has no lease). Repaint whenever it changes, not only on forceRedraw -
+  // otherwise the panel keeps whatever it showed at the transition, which is
+  // usually 0.0.0.0 and looks like a broken setup.
+  char ip[16];
+  getWiFiIpText(ip, sizeof(ip));
+  const bool haveIp = strcmp(ip, "0.0.0.0") != 0 && ip[0];
+  static char shownIp[16] = "\x01";
+  static bool shownHaveIp = true;
+  if (!forceRedraw && shownHaveIp == haveIp && strcmp(shownIp, ip) == 0) return;
+  strlcpy(shownIp, ip, sizeof(shownIp));
+  shownHaveIp = haveIp;
+  // Wipe first. The repaint swaps longer strings for shorter ones as the
+  // address arrives ("Connecting to WiFi..." -> "WiFi Connected"), and drawing
+  // over the old line left its tail showing through the new text.
+  tft.fillScreen(dispSettings.bgColor);
   markFrameDirty();
 
   const int16_t cx = uiW() / 2;
@@ -1132,39 +1148,36 @@ static void drawIdleNoPrinter() {
   const bool npLand = isLandscape();
   const int16_t npTitleY = npLand ? LY_LAND_IDLE_NP_TITLE_Y : LY_IDLE_NP_TITLE_Y;
   const int16_t npWifiY  = npLand ? LY_LAND_IDLE_NP_WIFI_Y  : LY_IDLE_NP_WIFI_Y;
-  const int16_t npDotY   = npLand ? LY_LAND_IDLE_NP_DOT_Y   : LY_IDLE_NP_DOT_Y;
   const int16_t npMsgY   = npLand ? LY_LAND_IDLE_NP_MSG_Y   : LY_IDLE_NP_MSG_Y;
   const int16_t npOpenY  = npLand ? LY_LAND_IDLE_NP_OPEN_Y  : LY_IDLE_NP_OPEN_Y;
   const int16_t npIpY    = npLand ? LY_LAND_IDLE_NP_IP_Y    : LY_IDLE_NP_IP_Y;
 #else
   const int16_t npTitleY = LY_IDLE_NP_TITLE_Y;
   const int16_t npWifiY  = LY_IDLE_NP_WIFI_Y;
-  const int16_t npDotY   = LY_IDLE_NP_DOT_Y;
   const int16_t npMsgY   = LY_IDLE_NP_MSG_Y;
   const int16_t npOpenY  = LY_IDLE_NP_OPEN_Y;
   const int16_t npIpY    = LY_IDLE_NP_IP_Y;
 #endif
 
-  tft.setTextColor(CLR_GREEN, CLR_BG);
+  tft.setTextColor(haveIp ? CLR_GREEN : CLR_TEXT_DIM, CLR_BG);
   setFont(tft, LY_F_LARGE);
   tft.drawString("BambuHelper", cx, npTitleY);
 
   tft.setTextColor(CLR_TEXT, CLR_BG);
   setFont(tft, LY_F_BODY);
-  tft.drawString("WiFi Connected", cx, npWifiY);
-
-  tft.fillCircle(cx, npDotY, LY_SC(5), dispSettings.statusOkColor);   // connected indicator
+  tft.drawString(haveIp ? "WiFi Connected" : "Connecting to WiFi...", cx, npWifiY);
 
   tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
   setFont(tft, LY_F_BODY);
   tft.drawString("No printer configured", cx, npMsgY);
-  tft.drawString("Open in browser:", cx, npOpenY);
+  tft.drawString(haveIp ? "Open in browser:" : "Waiting for an IP address",
+                 cx, npOpenY);
 
-  tft.setTextColor(CLR_ORANGE, CLR_BG);
-  setFont(tft, LY_F_LARGE);
-  char ip[16];
-  getWiFiIpText(ip, sizeof(ip));
-  tft.drawString(ip, cx, npIpY);
+  if (haveIp) {
+    tft.setTextColor(CLR_ORANGE, CLR_BG);
+    setFont(tft, LY_F_LARGE);
+    tft.drawString(ip, cx, npIpY);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -226,7 +226,16 @@ bool decodeImage(const BambuVector<uint8_t>& jpeg, const Job& job) {
 bool capture(uint8_t slot) {
   // Only one auxiliary TLS/DTLS session may run. If cloud HTTPS owns the
   // slot, leave this attempt for the next scheduler pass instead of waiting.
-  if (!p4AuxTransportTryAcquire(P4AuxTransportOwner::Camera)) return false;
+  if (!p4AuxTransportTryAcquire(P4AuxTransportOwner::Camera)) {
+    // Logged (throttled): a silently skipped capture is indistinguishable from
+    // a stalled scheduler once the frame on screen goes stale.
+    static uint32_t lastBusyLog = 0;
+    if (millis() - lastBusyLog >= 30000) {
+      lastBusyLog = millis();
+      Serial.println("[camera] skipped: auxiliary transport busy");
+    }
+    return false;
+  }
   struct Release {
     ~Release() { p4AuxTransportRelease(P4AuxTransportOwner::Camera); }
   } release;
@@ -343,6 +352,7 @@ bool capture(uint8_t slot) {
 void cameraTask(void*) {
   uint32_t handled = trigger.load();
   uint32_t lastPeriodic = millis(), lastMissingAttempt = 0;
+  unsigned attemptFailures = 0;   // consecutive attempts that produced no frame
   bool nextEnabled = false, nextAutomatic = false;
   P4NetworkStatus network{};
   P4UiStatus ui{};
@@ -383,31 +393,70 @@ void cameraTask(void*) {
     const bool missing=automaticCapture && online && visible && !currentJobImage(slot);
     const uint32_t now=millis();
     const bool resourceReady = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 64 * 1024;
+    // Cadence follows the last attempt's outcome, not only MQTT failures: a
+    // capture skipped because the auxiliary transport was busy leaves
+    // status.failures at zero, and a five-minute wait there looks like a stuck
+    // picture. Anything short of a completed capture retries in a minute.
+    const uint32_t cadence = attemptFailures ? p4CameraRetryMs() : p4CameraRefreshMs();
     const bool periodic=automaticCapture && online && visible &&
-                        p4CameraRetryDue(now,lastPeriodic,status.failures);
+                        uint32_t(now - lastPeriodic) >= cadence;
     const bool retry=missing && p4CameraMissingImageDue(now,lastMissingAttempt,status.failures);
-    const char* blocked = !status.credentialsReady || !nextEnabled ? "credentials" :
-      !online ? "network" : !printerReady ? "mqtt" : !visible ? "not_visible" :
-      !clockReady ? "clock" : !resourceReady ? "internal_memory" : "";
+    // Name the exact gate holding the scheduler. A stall used to be silent:
+    // no stage lines, no reason, just an old frame on screen.
+    char blocked[24] = "";
+    if (!status.credentialsReady)                  strlcpy(blocked, "credentials", sizeof(blocked));
+    else if (!nextEnabled)                         strlcpy(blocked, "disabled", sizeof(blocked));
+    else if (!online)                              strlcpy(blocked, "network", sizeof(blocked));
+    else if (!printerReady)                        strlcpy(blocked, "mqtt", sizeof(blocked));
+    else if (!dashboardVisible.load(std::memory_order_acquire))
+                                                   strlcpy(blocked, "ui_hidden", sizeof(blocked));
+    else if (!haveUi)                              strlcpy(blocked, "ui_missing", sizeof(blocked));
+    else if (!ui.dashboard)                        strlcpy(blocked, "ui_not_dash", sizeof(blocked));
+    else if (ui.page != 255)                       snprintf(blocked, sizeof(blocked), "ui_page_%u", unsigned(ui.page));
+    else if (ui.nightBlackout)                     strlcpy(blocked, "night", sizeof(blocked));
+    else if (ui.slot != slot)                      snprintf(blocked, sizeof(blocked), "ui_slot_%u", unsigned(ui.slot));
+    else if (!clockReady)                          strlcpy(blocked, "clock", sizeof(blocked));
+    else if (!resourceReady)                       strlcpy(blocked, "mem", sizeof(blocked));
     if (strcmp(status.blockedBy, blocked) != 0 || status.clockReady != clockReady) {
       strlcpy(status.blockedBy, blocked, sizeof(status.blockedBy));
       status.clockReady = clockReady;
       publishStatus();
+      Serial.printf("[camera-gate] blocked=%s online=%d printer=%d visible=%d "
+                    "ui=%d/%u/%u slot=%u internal=%u\n",
+                    blocked[0] ? blocked : "ready", online, printerReady, visible,
+                    haveUi ? int(ui.dashboard) : -1, unsigned(ui.page),
+                    unsigned(ui.slot), unsigned(slot),
+                    unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+    }
+    static uint32_t lastHealth = 0;
+    // Once a minute, not every ten seconds: this line exists to date a stall,
+    // and a hostless USB-CDC console pays for every byte written to it.
+    if (now - lastHealth >= 60000) {
+      lastHealth = now;
+      Serial.printf("[camera-health] blocked=%s failures=%u busy_attempts=%u "
+                    "since_attempt=%lus aux_busy=%d\n",
+                    blocked[0] ? blocked : "ready", status.failures, attemptFailures,
+                    (unsigned long)((now - lastPeriodic) / 1000UL),
+                    int(p4AuxTransportBusy()));
     }
     if (online && printerReady && visible && clockReady && resourceReady &&
         (manual || (status.credentialsReady && nextEnabled && (retry || periodic)))) {
-      if (capture(slot)) {
-        handled = requested;
-        const uint32_t completed = millis();
-        lastPeriodic=completed;
-        // A failed first capture also starts the missing-image backoff.
-        if (automaticCapture || status.failures) lastMissingAttempt=completed;
-        // Display the exact same backoff the scheduler uses, even while a
-        // previous successful image remains visible.
-        const uint32_t nextDelay = p4CameraRetryDelayMs(status.failures);
-        status.nextUpdateAt = automaticCapture ? time(nullptr) + nextDelay / 1000 : 0;
-        publishStatus();
-      }
+      const bool ok = capture(slot);
+      const uint32_t completed = millis();
+      // Advance both clocks on every attempt, successful or not. A failed or
+      // skipped attempt used to leave `periodic` true, so the loop retried
+      // every 20 ms while the delay it was meant to honour never applied.
+      lastPeriodic = completed;
+      if (automaticCapture || status.failures || !ok) lastMissingAttempt = completed;
+      attemptFailures = ok ? 0 : std::min(attemptFailures + 1, 9u);
+      handled = requested;   // manual is one attempt; press again to retry now
+      const uint32_t nextDelay = attemptFailures ? p4CameraRetryMs() : p4CameraRefreshMs();
+      status.nextUpdateAt = automaticCapture ? time(nullptr) + nextDelay / 1000 : 0;
+      publishStatus();
+      Serial.printf("[camera] attempt slot=%u manual=%d result=%s phase=%s "
+                    "failures=%u next=%lus\n",
+                    unsigned(slot), int(manual), ok ? "ok" : "failed", status.phase,
+                    status.failures, (unsigned long)(nextDelay / 1000));
     }
     vTaskDelay(pdMS_TO_TICKS(20));
   }

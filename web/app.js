@@ -333,6 +333,7 @@ function selectPrinterTab(slot){
     // The picker merged US and EU into one entry, but devices configured before
     // that still report 'eu' - without this the select would end up on nothing.
     document.getElementById('region').value = (d.region === 'eu') ? 'us' : (d.region || 'us');
+    syncTokenRegion();
     document.getElementById('cl_token').value = '';
     var capsChanged = false;
     Object.keys(GAUGE_REQUIRES).forEach(function(idx){
@@ -554,6 +555,7 @@ function cloudSignIn(){
   var p = new URLSearchParams();
   p.append('email', document.getElementById('cl_email').value.trim());
   p.append('mode', clLoginMode);
+  p.append('region', document.getElementById('region').value);
   if (clLoginMode === 'password'){
     p.append('password', document.getElementById('cl_pass').value);
     p.append('save', document.getElementById('cl_savePass').checked ? '1' : '0');
@@ -568,6 +570,7 @@ function cloudSignIn(){
 function cloudSubmitCode(){
   var p = new URLSearchParams();
   p.append('code', document.getElementById('cl_code').value.trim());
+  p.append('region', document.getElementById('region').value);
   document.getElementById('cl_loginMsg').textContent = 'Checking the code...';
   fetch('/cloud/login/code',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})
     .then(function(r){return r.json();})
@@ -576,6 +579,18 @@ function cloudSubmitCode(){
 }
 
 
+
+/* The manual token instructions point at whichever site actually issues the
+   cookie for the selected region: CN accounts sign in at bambulab.cn and their
+   token cookie lives on that domain, so the .com steps find nothing. */
+function syncTokenRegion(){
+  var sel = document.getElementById('region');
+  var site = (sel && sel.value === 'cn') ? 'bambulab.cn' : 'bambulab.com';
+  var link = document.getElementById('cl_tokenSite');
+  if (link){ link.href = 'https://' + site; link.textContent = site; }
+  var cookie = document.getElementById('cl_tokenCookie');
+  if (cookie) cookie.textContent = site;
+}
 
 /* Every printer bound to the account, straight from the cloud - so the serial
    is picked from a list instead of copied off a label. Works with a pasted

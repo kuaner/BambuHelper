@@ -1043,6 +1043,16 @@ static void updateDisplayedPrinterScreenState() {
   // handleDisplayedPrinterConnectedState() overrides for live-state branches.
   ledSetActivity(LED_ACT_IDLE);
 
+  // Setup mode outranks every printer-driven screen. A device with no stored
+  // printer (factory-fresh, or NVS cleared) hit the no-printer branch below and
+  // was forced to SCREEN_IDLE on the next loop pass, overwriting the AP page
+  // before anyone could read the SSID, password and portal address. The AP page
+  // is the only way a first-time user learns where to connect.
+  if (isAPMode()) {
+    if (current != SCREEN_AP_MODE) setScreenState(SCREEN_AP_MODE);
+    return;
+  }
+
   if (!isAnyPrinterConfigured()) {
     if (current != SCREEN_IDLE && current != SCREEN_OFF) {
       setScreenState(SCREEN_IDLE);

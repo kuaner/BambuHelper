@@ -33,6 +33,7 @@ struct MqttConn {
 #if HAS_HMS_UI
   bool hmsBaselineOpen = false;
   bool hmsBaselineSeal = false;
+  uint32_t hmsBaselineOpenMs = 0;   // window age cap; see the close rule
 #endif
 };
 void initConnSlot(uint8_t slot);

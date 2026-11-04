@@ -272,7 +272,7 @@ void execute(const Request& request) {
   switch (request.command) {
     case Command::LoginPassword:
       loginNeedsTwoFactor = false;
-      cloudLoginWithPassword(request.email, request.password);
+      cloudLoginWithPassword(request.email, request.password, request.region);
       if (cloudLoginState() == CLOUD_LOGIN_OK) {
         loginCredentialsStored = storeLoginCredentials(request.email, request.password, request.savePassword);
       } else if (cloudLoginState() == CLOUD_LOGIN_NEED_TFA ||
@@ -283,9 +283,9 @@ void execute(const Request& request) {
       break;
     case Command::LoginEmail:
       loginNeedsTwoFactor = true;
-      cloudLoginRequestEmailCode(request.email); finishLogin(); break;
+      cloudLoginRequestEmailCode(request.email, request.region); finishLogin(); break;
     case Command::LoginCode:
-      cloudLoginSubmitCode(request.code);
+      cloudLoginSubmitCode(request.code, request.region);
       if (cloudLoginState() == CLOUD_LOGIN_OK)
         // Second-factor sign-ins never persist a reusable password. The login
         // module clears that stale value after this verified email commit.
@@ -692,14 +692,15 @@ bool p4CloudFactoryReset() {
   }
   return p4WebAwaitStorage(ticket, 1000);
 }
-bool p4CloudStartLogin(const char* email, const char* password, bool save, bool emailCode, String& error) {
+bool p4CloudStartLogin(const char* email, const char* password, bool save, bool emailCode,
+                       CloudRegion region, String& error) {
   const bool accepted = postBuiltNetwork(emailCode ? Command::LoginEmail : Command::LoginPassword,
-                                         REGION_CN, save, email, password, nullptr);
+                                         region, save, email, password, nullptr);
   if (!accepted) error = "Cloud request already running.";
   return accepted;
 }
-bool p4CloudSubmitCode(const char* code) {
-  return postBuiltNetwork(Command::LoginCode, REGION_CN, false, nullptr, nullptr, code);
+bool p4CloudSubmitCode(const char* code, CloudRegion region) {
+  return postBuiltNetwork(Command::LoginCode, region, false, nullptr, nullptr, code);
 }
 bool p4CloudStartPrinters(CloudRegion region) {
   return postBuiltNetwork(Command::Printers, region, false, nullptr, nullptr, nullptr);
