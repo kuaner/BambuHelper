@@ -118,6 +118,9 @@ int main(int argc,char** argv) {
   s.ams.activeTray=5;followP4ActiveAms(v,s.ams);assert(v.amsPage==1&&!v.amsManual);
   s.ams.activeTray=0;followP4ActiveAms(v,s.ams);assert(v.amsPage==0);
   p4DashboardGesture(v,s,Gesture::Left,{600,450}); assert(v.amsPage==1); render("ams-zero-humidity");
+  // Unknown remain still shows a clean colour block: the filament is known,
+  // only its measurement is missing. No "?" painted on the spool (app parity).
+  s.ams.trays[4].remain=-1; render("ams-unknown-remain"); s.ams.trays[4].remain=91;
   followP4ActiveAms(v,s.ams);assert(v.amsPage==1&&v.amsManual);
   assert(v.showCamera);
   p4DashboardGesture(v,s,Gesture::Tap,{500,180}); assert(v.page==-1);
@@ -145,6 +148,23 @@ int main(int argc,char** argv) {
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==0);
   p4DashboardGesture(v,s,Gesture::Tap,{924,35}); assert(v.page==-1);
+  render("alert-badge");   // main page still carrying the alert state above
+  {
+    // rgb(0xff,0xc1,0x7e) ORANGE, rgb(0xf0,0x80,0x80) RED — a stopped-print
+    // error dots red, an HMS fault amber. The old inline badge painted text
+    // here; only the header icon dot may carry either colour now.
+    constexpr uint16_t kOrange = 0xfe0f, kRed = 0xf410;
+    bool dotSeen = false;
+    for (int y = 16; y <= 38; ++y) for (int x = 916; x <= 944; ++x) {
+      const uint16_t px = frame.readPixel(x, y);
+      if (px == kOrange || px == kRed) { dotSeen = true; break; }
+    }
+    assert(dotSeen && "alert dot missing on the info icon");
+    for (int y = 106; y <= 140; ++y) for (int x = 870; x <= 1004; ++x) {
+      const uint16_t px = frame.readPixel(x, y);
+      assert((px != kOrange && px != kRed) && "inline alert badge is back");
+    }
+  }
   s.connected=false; render("offline");
   s={}; snprintf(s.subtaskName,sizeof(s.subtaskName),"超长中文任务名称用于验证边界不会覆盖右侧信息或超出屏幕显示范围"); render("unknown-data");
   s.connected=true; s.gcodeStateId=GCODE_IDLE; s.ams.unitCount=6; s.ams.trayUnitCount=4;

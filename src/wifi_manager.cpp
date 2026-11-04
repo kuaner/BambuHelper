@@ -3,6 +3,7 @@
 #include <new>
 #include "p4_runtime.h"
 #include "settings.h"
+#include "web_server.h"   // isOtaAutoInProgress: the link-dead reboot must not cut an OTA short
 #include "display_ui.h"
 #include "config.h"
 #include "improv_setup.h"
@@ -26,6 +27,14 @@ static DNSServer* dnsServer = nullptr;
 static unsigned long disconnectTime = 0;
 static unsigned long lastReconnectAttempt = 0;
 static uint8_t reconnectAttempts = 0;
+#if defined(BOARD_IS_WS_P4_7B)
+// esp-hosted self-healing timers. See config.h: the coprocessor can die
+// without ever delivering a disconnect event, so status alone is untrustworthy
+// and every guard here is gated on the netif IP instead.
+static unsigned long fakeOnlineSince = 0;   // status=connected but no lease
+static uint8_t fakeOnlineForces = 0;        // forced reconnects in that state
+static unsigned long noIpSince = 0;         // any state, no lease at all
+#endif
 static unsigned long lastStaProbe = 0;
 static unsigned long probeStartTime = 0;
 static bool staProbing = false;
@@ -535,9 +544,30 @@ void p4WifiServiceOnline() {
   reconnectAttempts = 0;
   lastReconnectAttempt = 0;
   phase3StartTime = 0;
+  fakeOnlineSince = 0;
+  fakeOnlineForces = 0;
+  noIpSince = 0;
   stopAP(); apMode = false; staProbing = false;
   configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
   startMDNS();
+}
+#endif
+
+#if defined(BOARD_IS_WS_P4_7B)
+// Last resort for a dead coprocessor link: nothing has produced an IP for a
+// long stretch through both offline reconnects and fake-online rebuilds, and
+// phase-3 attempts have actually been running. A hosted link that far gone
+// does not come back on its own — rebooting reproduces the power-cycle
+// recovery. Never during an OTA transfer.
+void checkP4LinkDeadReboot() {
+  if (!noIpSince || millis() - noIpSince < P4_LINK_DEAD_REBOOT_MS) return;
+  if (reconnectAttempts < WIFI_BACKOFF_PHASE3_START + P4_LINK_DEAD_REBOOT_MIN_ATTEMPTS) return;
+  if (isOtaAutoInProgress()) return;
+  Serial.printf("WiFi: no IP for %lus after %u reconnect attempts — rebooting to recover the hosted link\n",
+                (unsigned long)((millis() - noIpSince) / 1000), reconnectAttempts);
+  Serial.flush();
+  delay(250);
+  ESP.restart();
 }
 #endif
 
@@ -572,17 +602,57 @@ void handleWiFi() {
     return;
   }
   if (WiFi.status() == WL_CONNECTED) {
-    if (disconnectTime) p4WifiServiceOnline();
-    disconnectTime = 0;
+    if (WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+      fakeOnlineSince = 0;
+      fakeOnlineForces = 0;
+      noIpSince = 0;
+      if (disconnectTime) p4WifiServiceOnline();
+      disconnectTime = 0;
+      return;
+    }
+    // Fake online: the connected flag stands but the lease is gone — the
+    // hosted coprocessor stopped delivering events. A plain begin() here is
+    // not enough: after a few windows escalate to a full transport rebuild.
+    if (!fakeOnlineSince) {
+      fakeOnlineSince = millis();
+      Serial.println("WiFi: status is connected but the IP is gone — hosted link suspect");
+    }
+    if (!noIpSince) noIpSince = millis();
+    if (millis() - fakeOnlineSince >= P4_FAKE_ONLINE_RECONNECT_MS) {
+      lastReconnectAttempt = millis();
+      reconnectAttempts++;
+      fakeOnlineSince = millis();  // re-arm the window
+      if (++fakeOnlineForces >= P4_FAKE_ONLINE_REBUILD_AFTER) {
+        fakeOnlineForces = 0;
+        Serial.println("WiFi: repeated connected-but-no-IP windows, rebuilding transport");
+        recoverWiFiTransport();    // throttled to once per 60s internally
+      } else {
+        Serial.printf("WiFi: forced reconnect %u/%u under a connected-but-no-IP link\n",
+                      fakeOnlineForces, P4_FAKE_ONLINE_REBUILD_AFTER);
+        WiFi.disconnect(false);
+        WiFi.begin(wifiSSID, wifiPass);
+      }
+    }
+    checkP4LinkDeadReboot();
     return;
   }
-  if (!disconnectTime) disconnectTime = millis();
+  fakeOnlineSince = 0;
+  fakeOnlineForces = 0;
+  if (!noIpSince) noIpSince = millis();
+  if (!disconnectTime) {
+    disconnectTime = millis();
+    Serial.println("WiFi disconnected, will try to reconnect...");
+  }
   if (!lastReconnectAttempt || millis() - lastReconnectAttempt > reconnectInterval()) {
     lastReconnectAttempt = millis();
     reconnectAttempts++;
+    Serial.printf("WiFi: reconnect attempt %u (interval %lus, last reason=%u)\n",
+                  reconnectAttempts, reconnectInterval() / 1000UL,
+                  (unsigned)staLastReason.load());
     WiFi.disconnect(false);
     WiFi.begin(wifiSSID, wifiPass);
   }
+  checkP4LinkDeadReboot();
   return;
 #endif
   if (apMode) {

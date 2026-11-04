@@ -4,6 +4,7 @@
 #if defined(BOARD_IS_WS_P4_7B)
 #include "fonts.h"
 #include "hms_lookup.h"
+#include "settings.h"    // dispSettings.hmsSeverityAll — the alert-visibility bar
 #include "p4_printer_artwork.h"
 #include "p4_camera_service.h"
 #include <lgfx/utility/lgfx_qrcode.h>
@@ -178,6 +179,16 @@ void header(Canvas& cv, const PrinterSlot& p, const P4DashboardView& v, time_t n
     cv.g.drawCircle(INFO_X,38,12,FG);
     cv.g.fillCircle(INFO_X,31,1,FG);
     cv.g.fillRect(INFO_X-1,36,3,10,FG);
+#if HAS_HMS_UI
+    // Alert badge: a dot on the info icon, never text on the print page.
+    // Same bar the Bambu app clears (errorBadgeFor): connection-time
+    // baselines, self-resolved events and severity-3 advisories never light
+    // it — only what a phone would actually notify about.
+    if (const ErrorBadge badge = errorBadgeFor(p.state); badge.active) {
+      cv.g.fillCircle(INFO_X+10,27,6,BG);        // ring gap against the icon stroke
+      cv.g.fillCircle(INFO_X+10,27,5,badge.severity <= 1 ? RED : ORANGE);
+    }
+#endif
   }
   // A continuous toothed outline shares the info button's 24px envelope and
   // one-pixel stroke. No filled disk or independent outer circle.
@@ -322,10 +333,9 @@ void job(Canvas& cv, const PrinterSlot& p, time_t now, bool networkOnline, uint3
   cv.text(taskName[0]?taskName:s.subtaskName[0] ? jobDisplayName(s) : "等待新的打印任务",
           CONTENT,96,titleWidth,FG,FONT_CJK,1,BG,true);
 #if HAS_HMS_UI
-  if (s.hmsCount || s.printError) {
-    char badge[24]; snprintf(badge,sizeof(badge),"提醒 %u",s.hmsCount+(s.printError?1:0));
-    cv.text(badge,876,117,126,ORANGE,FONT_SMALL_2X,.85f);
-  }
+  // No inline alert text on the print page: the header's info-icon dot is the
+  // only main-page alert surface (see header()); codes and counts live in the
+  // details page behind it.
 #endif
   char b[64];
   if (known(s, P4_PROGRESS)) snprintf(b, sizeof(b), "%u", std::min<unsigned>(100, s.progress)); else snprintf(b, sizeof(b), "—");
@@ -371,10 +381,12 @@ void spool(Canvas& cv, const AmsTray* t, bool active, const char* label, int x, 
   cv.g.fillRoundRect(x, y, 41, 69, 6, rgb(0x62676c));
   cv.g.fillRoundRect(x+3, y+3, 35, 63, 4, rgb(0xa3a8ac));
   if (loaded) {
+    // Unknown remain still draws a full colour block: the colour is known, it
+    // is the measurement that is missing. No "?" on the spool — it reads as
+    // "unknown filament", and the Bambu app leaves the block clean too.
     const int h = t->remain < 0 ? 35 : 5 + std::min<int>(100,t->remain)*40/100;
     cv.g.fillRect(x+9, y+56-h, 23, h, t->colorRgb565);
     for (int stripe=11; stripe < 32; stripe+=3) cv.g.drawFastVLine(x+stripe,y+56-h,h,LINE);
-    if (t->remain < 0) cv.text("?",x+14,y+30,20,FG,FONT_SMALL_2X,.8f,LINE);
   }
   cv.g.fillRect(x+5,y+14,3,44,DIM); cv.g.fillRect(x+33,y+14,3,44,DIM);
   if (active) { cv.g.drawRoundRect(x-1,y-1,43,71,7,GREEN); cv.g.drawRoundRect(x-2,y-2,45,73,8,GREEN); }
@@ -438,6 +450,21 @@ void ams(Canvas& cv, const BambuState& s, uint8_t page, int x, int top, int widt
 void row(Canvas& cv,const char* label,const char* value,int y,uint16_t color=FG) {
   cv.text(label,48,y,220,MUTED); cv.text(value,286,y,678,color,FONT_BODY_2X,.9f);
 }
+#if HAS_HMS_UI
+// One entry's visibility under the errorBadgeFor bar, itemised so the alert
+// list can apply it per record: the dot and the list agree on what counts as
+// an alert, and records the Bambu app does not surface stay off the device.
+bool alertEntryVisible(const BambuState& s, uint8_t hmsIndex) {
+  const HmsEntry& e = s.hms[hmsIndex];
+  const uint8_t sev = hmsSeverityOf(e.code);
+  if (sev < 1 || sev > 3) return false;                        // info/unknown: never alerts
+  if (sev == 3 && !dispSettings.hmsSeverityAll) return false;   // "important only" default
+  if (hmsIsBaseline(s, e.attr, e.code)) return false;           // standing before we connected
+  if (hmsIsSelfResolved(e.attr, e.code)) return false;          // printer handled it (#181)
+  if (hmsIsRejectedCommand(e.attr, e.code) && !s.hmsOwnCmdRejected) return false;  // (#185)
+  return true;
+}
+#endif
 void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now,const char* deviceIp,bool networkOnline) {
   const auto& s=p.state;
   if (v.page==4) {
@@ -465,7 +492,9 @@ void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now
   for(int i=0;i<4;++i) {
     int x=40+i*240;
     cv.g.fillRoundRect(x,TAB_Y,224,TAB_H,12,v.page==i?rgb(0x203b33):SURFACE);
-    cv.text(tabs[i],x+82,TAB_Y+12,130,v.page==i?GREEN:MUTED,FONT_SMALL_2X,1,v.page==i?rgb(0x203b33):SURFACE);
+    // Middle datum on the pill's centreline — a top-left datum made the
+    // label sit visibly low in the 50px button.
+    cv.text(tabs[i],x+82,TAB_Y+TAB_H/2,130,v.page==i?GREEN:MUTED,FONT_SMALL_2X,1,v.page==i?rgb(0x203b33):SURFACE,true);
   }
   char b[180];
   if(v.page==0) {
@@ -492,7 +521,14 @@ void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now
     row(cv,"看板固件",FW_VERSION,460);
   } else {
 #if HAS_HMS_UI
-    const unsigned count=s.hmsCount+(s.printError?1:0);
+    // Visible set only: a stopped-print error first (a cancel is the user's
+    // own doing and shows as a state word instead), then the HMS records that
+    // clear the alertEntryVisible bar. Filtered records are not listed at
+    // all — the Bambu app does not surface them either.
+    int8_t visible[1 + HMS_MAX_ENTRIES]; unsigned count = 0;
+    if (s.printError && !printErrorIsCancel(s.printError)) visible[count++] = -1;
+    for (uint8_t i = 0; i < s.hmsCount; ++i)
+      if (alertEntryVisible(s, i)) visible[count++] = (int8_t)i;
     if(!count) {
       cv.text("当前没有打印机提醒",48,196,920,GREEN,FONT_BODY_2X);
       cv.text(s.connected?"后续上报的故障与提醒会显示在这里":"连接已断开，提醒状态可能不是最新",48,258,920,MUTED);
@@ -500,8 +536,8 @@ void details(Canvas& cv,const PrinterSlot& p,const P4DashboardView& v,time_t now
       const unsigned offset=std::min<unsigned>(v.alertOffset,count-1);
       for(unsigned i=offset;i<std::min<unsigned>(count,offset+2);++i) {
         const int y=166+(i-offset)*175; const char* description=nullptr;
-        if(s.printError&&i==0) { printErrorFormatCode(s.printError,b,sizeof(b)); description=printErrorLookupText(s.printError); }
-        else { const auto& e=s.hms[i-(s.printError?1:0)]; hmsFormatCode(e.attr,e.code,b,sizeof(b)); description=hmsLookupText(e.attr,e.code); }
+        if(visible[i]<0) { printErrorFormatCode(s.printError,b,sizeof(b)); description=printErrorLookupText(s.printError); }
+        else { const auto& e=s.hms[visible[i]]; hmsFormatCode(e.attr,e.code,b,sizeof(b)); description=hmsLookupText(e.attr,e.code); }
         cv.text(b,48,y,920,ORANGE,FONT_BODY_2X);
         if(!description) description="查看网页中的完整提醒说明";
         // Wrap without breaking UTF-8; English catalogue text uses measured words.

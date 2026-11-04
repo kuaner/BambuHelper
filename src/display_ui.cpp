@@ -597,10 +597,8 @@ void initDisplay() {
     tft.setTextColor(CLR_GREEN, CLR_BG);
     setFont(tft, LY_F_LARGE);
     tft.drawString("BambuHelper", sw / 2, sh / 2 + LY_SPLASH_TITLE_DY);
-    setFont(tft, LY_F_BODY);
-    tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
-    tft.drawString("Printer Monitor", sw / 2, sh / 2 + LY_SPLASH_SUB_DY);
     setFont(tft, LY_F_SMALL);
+    tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
     tft.drawString(FW_VERSION, sw / 2, sh / 2 + LY_SPLASH_VER_DY);
   }
 }

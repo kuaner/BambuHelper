@@ -4,7 +4,7 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-#define FW_VERSION          "v4.0.2"
+#define FW_VERSION          "v4.0.3"
 
 // Board variant — injected into the web UI for OTA asset filtering.
 // Normally set via build_flags in platformio.ini; this is a fallback.
@@ -107,6 +107,13 @@
 #define WIFI_STA_PROBE_INTERVAL   120000  // 2 min between STA probes while in AP mode
 #define WIFI_STA_PROBE_CHECK_MS    10000  // 10s after probe start before checking result
 #define WIFI_AP_FALLBACK_MS       900000  // 15 min in phase 3 before falling back to AP
+// esp-hosted (P4 + C6) self-healing. When the coprocessor dies mid-run the
+// disconnect event never arrives, so WiFi.status() freezes at WL_CONNECTED
+// while the netif lease is gone. The IP is the honest signal: gate on it.
+#define P4_FAKE_ONLINE_RECONNECT_MS   30000  // connected-but-no-IP this long -> forced reconnect
+#define P4_FAKE_ONLINE_REBUILD_AFTER  3      // that many windows -> full transport rebuild
+#define P4_LINK_DEAD_REBOOT_MS       900000  // no IP at all for 15 min -> reboot (power-cycle recovery)
+#define P4_LINK_DEAD_REBOOT_MIN_ATTEMPTS 3   // ...and at least this many phase-3 reconnects ran
 // AP-fallback hint: below WEAK the failure is blamed on signal outright; below
 // MARGINAL only when the AP never rejected the password.
 #define WIFI_RSSI_WEAK            -85

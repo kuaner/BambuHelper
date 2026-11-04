@@ -1710,10 +1710,13 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
   // initializes quietly instead of reading as a 0 -> nonzero edge.
   if (print["print_error"].is<unsigned int>()) {
     uint32_t pe = print["print_error"].as<unsigned int>();
-    if (mqttDebugLog && (!s.printErrorSeen || pe != s.printError))
-      Serial.printf("MQTT: print_error %08X -> %08X%s\n",
+    // Un-gated on change: alert surfaces key off this field, so every
+    // transition is on the serial log regardless of the debug switch.
+    if (!s.printErrorSeen || pe != s.printError)
+      Serial.printf("MQTT: print_error %08X -> %08X%s%s\n",
                     s.printErrorSeen ? s.printError : 0u, pe,
-                    s.printErrorSeen ? "" : " (first sight)");
+                    s.printErrorSeen ? "" : " (first sight)",
+                    printErrorIsCancel(pe) ? " (cancel)" : "");
     s.printError = pe;
     s.printErrorSeen = true;
   }
@@ -1812,6 +1815,24 @@ static void parseMqttPayload(byte* payload, unsigned int length, BambuState& s,
                       (unsigned)(s.hms[i].code >> 16), (unsigned)(s.hms[i].code & 0xFFFF),
                       hmsSeverityOf(s.hms[i].code),
                       hmsIsBaseline(s, s.hms[i].attr, s.hms[i].code) ? " baseline" : "");
+    }
+    // Un-gated set-change line: fielded alert surfaces key off this set, so
+    // every composition change lands on serial even with debug logging off.
+    // Identity ignores the ts_* fields, which churn on every report.
+    static uint32_t lastSetKey = 0xFFFFFFFF;
+    uint32_t setKey = s.hmsCount * 0x9E3779B9u;
+    for (uint8_t i = 0; i < s.hmsCount; i++) setKey = setKey * 31 + (s.hms[i].attr ^ s.hms[i].code);
+    if (setKey != lastSetKey) {
+      lastSetKey = setKey;
+      Serial.printf("MQTT: hms set changed: %u kept\n", (unsigned)s.hmsCount);
+      for (uint8_t i = 0; i < s.hmsCount; i++)
+        Serial.printf("MQTT:   [%u] %04X-%04X-%04X-%04X sev=%u%s%s\n",
+                      i,
+                      (unsigned)(s.hms[i].attr >> 16), (unsigned)(s.hms[i].attr & 0xFFFF),
+                      (unsigned)(s.hms[i].code >> 16), (unsigned)(s.hms[i].code & 0xFFFF),
+                      hmsSeverityOf(s.hms[i].code),
+                      hmsIsBaseline(s, s.hms[i].attr, s.hms[i].code) ? " baseline" : "",
+                      hmsIsSelfResolved(s.hms[i].attr, s.hms[i].code) ? " self-resolved" : "");
     }
   }
 #endif  // HAS_HMS_UI
@@ -1988,6 +2009,18 @@ void finishReconnect(MqttConn& c,bool connected,unsigned long t0) {
     c.consecutiveFails++;
     c.diag.lastRc = c.mqtt->state();
     c.diag.connectDurMs = millis() - t0;
+#if defined(BOARD_IS_WS_P4_7B)
+    // Wi-Fi self-heal hook: the link owner still believes it is online, yet
+    // the broker keeps failing at the transport layer (TCP/TLS down, not a
+    // credentials reject) deeply into phase-3 backoff. That is the signature
+    // of a hosted link that only looks alive — ask for a transport rebuild
+    // (recoverWiFiTransport throttles it to one per minute).
+    if ((c.diag.lastRc == -2 || c.diag.lastRc == -3) &&
+        c.consecutiveFails >= BAMBU_BACKOFF_PHASE1 + BAMBU_BACKOFF_PHASE2) {
+      Serial.println("[mqtt-wifi] repeated transport failures while Wi-Fi looks online — requesting link rebuild");
+      requestWiFiTransportRebuild();
+    }
+#endif
     // Cloud DNS/TCP/TLS/MQTT failures belong to this connection only. A
     // healthy Wi-Fi association must not be disconnected to retry a broker.
     MQTT_LOG("[%d] CONNECT FAILED rc=%d (%s) took %lums",
